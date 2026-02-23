@@ -19,6 +19,16 @@ async function request<T>(
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+
+  // REGRA CRÍTICA: 401 → sessão inválida/expirada → forçar logout e redirecionar para login
+  // Não redirecionar se já estiver na tela de login (evita loop)
+  if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
+    localStorage.removeItem('agile360_token');
+    localStorage.removeItem('agile360_refresh');
+    window.location.href = '/login';
+    return { success: false, error: { message: 'Sessão expirada. Faça login novamente.', statusCode: 401 } } as ApiResponse<T>;
+  }
+
   const json = await res.json().catch(() => ({}));
 
   if (!res.ok) {
@@ -34,10 +44,36 @@ async function request<T>(
 }
 
 export const api = {
+  async get<T>(path: string, token?: string) {
+    return request<T>(path, { method: 'GET', token });
+  },
   async post<T>(path: string, body: unknown, token?: string) {
     return request<T>(path, { method: 'POST', body: JSON.stringify(body), token });
   },
-  async get<T>(path: string, token?: string) {
-    return request<T>(path, { method: 'GET', token });
+  async put<T>(path: string, body: unknown, token?: string) {
+    return request<T>(path, { method: 'PUT', body: JSON.stringify(body), token });
+  },
+  async patch<T>(path: string, body: unknown, token?: string) {
+    return request<T>(path, { method: 'PATCH', body: JSON.stringify(body), token });
+  },
+  async delete<T = void>(path: string, token?: string) {
+    return request<T>(path, { method: 'DELETE', token });
+  },
+  /** Multipart/form-data — para upload de arquivos */
+  async postForm<T>(path: string, form: FormData, token?: string) {
+    const headers: HeadersInit = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    // Não definir Content-Type — o browser define com boundary correto
+    const res = await fetch(`${API_BASE}${path}`, { method: 'POST', body: form, headers });
+    if (res.status === 401 && !window.location.pathname.startsWith('/login')) {
+      localStorage.removeItem('agile360_token');
+      localStorage.removeItem('agile360_refresh');
+      window.location.href = '/login';
+      return { success: false, error: { message: 'Sessão expirada. Faça login novamente.', statusCode: 401 } } as ApiResponse<T>;
+    }
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok)
+      return { success: false, error: { message: json?.error?.message || res.statusText, statusCode: res.status } } as ApiResponse<T>;
+    return { success: true, data: json.data ?? json } as ApiResponse<T>;
   },
 };

@@ -1,33 +1,36 @@
+using Agile360.Application.Interfaces;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Enums;
 using Agile360.Domain.Interfaces;
 using Agile360.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
 
 namespace Agile360.Infrastructure.Repositories;
 
 public class PrazoRepository : Repository<Prazo>, IPrazoRepository
 {
-    public PrazoRepository(Agile360DbContext context) : base(context)
-    {
-    }
+    public PrazoRepository(SupabaseDataClient client, ICurrentUserService currentUser)
+        : base(client, currentUser) { }
 
-    public async Task<IReadOnlyList<Prazo>> GetVencimentoProximoAsync(int horasAntes, CancellationToken cancellationToken = default)
+    // GET /rest/v1/prazos?status=eq.Pendente&data_vencimento=gte.{agora}&data_vencimento=lte.{limite}&order=data_vencimento.asc
+    public Task<IReadOnlyList<Prazo>> GetVencimentoProximoAsync(int horasAntes, CancellationToken ct = default)
     {
-        var agora = DateTimeOffset.UtcNow;
+        var agora  = DateTimeOffset.UtcNow;
         var limite = agora.AddHours(horasAntes);
-        return await _dbSet
-            .Where(p => p.Status == StatusPrazo.Pendente && p.DataVencimento >= agora && p.DataVencimento <= limite)
-            .OrderBy(p => p.DataVencimento)
-            .ToListAsync(cancellationToken);
+        var filter = $"status=eq.{StatusPrazo.Pendente}" +
+                     $"&data_vencimento=gte.{agora:O}" +
+                     $"&data_vencimento=lte.{limite:O}" +
+                     $"&order=data_vencimento.asc";
+        return _client.GetListAsync<Prazo>(TableName, filter, Token, ct);
     }
 
-    public async Task<IReadOnlyList<Prazo>> GetPendentesAsync(CancellationToken cancellationToken = default) =>
-        await _dbSet.Where(p => p.Status == StatusPrazo.Pendente).OrderBy(p => p.DataVencimento).ToListAsync(cancellationToken);
+    // GET /rest/v1/prazos?status=eq.Pendente&order=data_vencimento.asc
+    public Task<IReadOnlyList<Prazo>> GetPendentesAsync(CancellationToken ct = default) =>
+        _client.GetListAsync<Prazo>(TableName,
+            $"status=eq.{StatusPrazo.Pendente}&order=data_vencimento.asc", Token, ct);
 
-    public async Task<IReadOnlyList<Prazo>> GetFataisAsync(CancellationToken cancellationToken = default) =>
-        await _dbSet
-            .Where(p => p.Status == StatusPrazo.Pendente && p.Tipo == TipoPrazo.Fatal)
-            .OrderBy(p => p.DataVencimento)
-            .ToListAsync(cancellationToken);
+    // GET /rest/v1/prazos?status=eq.Pendente&tipo=eq.Fatal&order=data_vencimento.asc
+    public Task<IReadOnlyList<Prazo>> GetFataisAsync(CancellationToken ct = default) =>
+        _client.GetListAsync<Prazo>(TableName,
+            $"status=eq.{StatusPrazo.Pendente}&tipo=eq.{TipoPrazo.Fatal}&order=data_vencimento.asc",
+            Token, ct);
 }

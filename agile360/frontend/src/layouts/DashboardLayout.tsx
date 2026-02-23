@@ -5,7 +5,7 @@ const navItems = [
   { to: '/app', label: 'Início' },
   { to: '/app/clientes', label: 'Clientes' },
   { to: '/app/processos', label: 'Processos' },
-  { to: '/app/audiencias', label: 'Audiências' },
+  { to: '/app/audiencias', label: 'Compromissos' },
   { to: '/app/prazos', label: 'Prazos' },
 ];
 

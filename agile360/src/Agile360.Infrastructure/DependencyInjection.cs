@@ -3,10 +3,8 @@ using Agile360.Application.Integration;
 using Agile360.Domain.Interfaces;
 using Agile360.Infrastructure.Auth;
 using Agile360.Infrastructure.Data;
-using Agile360.Infrastructure.Data.Interceptors;
 using Agile360.Infrastructure.Integration;
 using Agile360.Infrastructure.Repositories;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -17,18 +15,27 @@ namespace Agile360.Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddInfrastructureServices(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddInfrastructureServices(
+        this IServiceCollection services, IConfiguration configuration)
     {
+        // ─── Supabase Auth (GoTrue) ─────────────────────────────────────────────
         services.Configure<SupabaseAuthOptions>(configuration.GetSection(SupabaseAuthOptions.SectionName));
         services.AddHttpClient<SupabaseAuthClient>();
+
+        // ─── Supabase Data API (PostgREST) ──────────────────────────────────────
+        // O construtor de SupabaseDataClient já configura BaseAddress e o header
+        // apikey via IOptions<SupabaseAuthOptions>. Não duplicar aqui.
+        services.AddHttpClient<SupabaseDataClient>();
+
+        // ─── Auth & Identidade ──────────────────────────────────────────────────
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
-        // Validator is stateless and used by middleware which is constructed from the root provider.
-        // Register as singleton so it can be resolved when building the middleware pipeline.
-        services.AddSingleton<IWebhookSignatureValidator, WebhookSignatureValidator>();
-        services.Configure<N8nOptions>(configuration.GetSection(N8nOptions.SectionName));
 
-        // Named HttpClient for AI / n8n (Story 1.4): retry, circuit breaker, timeout
+        // ─── Webhook ────────────────────────────────────────────────────────────
+        services.AddSingleton<IWebhookSignatureValidator, WebhookSignatureValidator>();
+
+        // ─── n8n / AI Gateway ───────────────────────────────────────────────────
+        services.Configure<N8nOptions>(configuration.GetSection(N8nOptions.SectionName));
         services.AddHttpClient("Agile360.AI", (sp, client) =>
         {
             var options = sp.GetRequiredService<IOptions<N8nOptions>>().Value;
@@ -45,51 +52,32 @@ public static class DependencyInjection
 
         services.AddScoped<IAiGatewayService, N8nAiGatewayService>();
 
-        var connectionString = configuration.GetConnectionString("Supabase")
-            ?? throw new InvalidOperationException("Connection string 'Supabase' not found.");
-
-        services.AddScoped<TenantSaveChangesInterceptor>();
-        services.AddScoped<AuditSaveChangesInterceptor>();
-
-        services.AddDbContext<Agile360DbContext>((sp, options) =>
-        {
-            options.UseNpgsql(connectionString, npgsql =>
-            {
-                npgsql.EnableRetryOnFailure(2);
-                npgsql.CommandTimeout(30);
-            });
-            options.AddInterceptors(
-                sp.GetRequiredService<TenantSaveChangesInterceptor>(),
-                sp.GetRequiredService<AuditSaveChangesInterceptor>());
-        });
-
+        // ─── Repositórios (PostgREST) ───────────────────────────────────────────
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
-        services.AddScoped<IClienteRepository, ClienteRepository>();
-        services.AddScoped<IProcessoRepository, ProcessoRepository>();
-        services.AddScoped<IAudienciaRepository, AudienciaRepository>();
-        services.AddScoped<IPrazoRepository, PrazoRepository>();
+        services.AddScoped<IClienteRepository,     ClienteRepository>();
+        services.AddScoped<IProcessoRepository,    ProcessoRepository>();
+        services.AddScoped<ICompromissoRepository, CompromissoRepository>();
 
-        services.AddHealthChecks()
-            .AddNpgSql(connectionString, name: "postgres");
+        // ─── Health Check ────────────────────────────────────────────────────────
+        // Verificação básica de liveness; adicione AspNetCore.HealthChecks.Uris
+        // se quiser um ping HTTP dedicado ao Supabase Data API.
+        services.AddHealthChecks();
 
         return services;
     }
 
-    private static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy()
-    {
-        return HttpPolicyExtensions
+    // ─── Polly ───────────────────────────────────────────────────────────────────
+
+    private static IAsyncPolicy<HttpResponseMessage> GetRetryPolicy() =>
+        HttpPolicyExtensions
             .HandleTransientHttpError()
             .OrResult(r => (int)r.StatusCode >= 500)
-            .WaitAndRetryAsync(2, retryAttempt =>
-                TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)));
-    }
+            .WaitAndRetryAsync(2, attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)));
 
-    private static IAsyncPolicy<HttpResponseMessage> GetCircuitBreakerPolicy()
-    {
-        return HttpPolicyExtensions
+    private static IAsyncPolicy<HttpResponseMessage> GetCircuitBreakerPolicy() =>
+        HttpPolicyExtensions
             .HandleTransientHttpError()
             .OrResult(r => (int)r.StatusCode >= 500)
             .CircuitBreakerAsync(5, TimeSpan.FromSeconds(30));
-    }
 }

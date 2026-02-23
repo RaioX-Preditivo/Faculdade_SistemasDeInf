@@ -76,9 +76,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: res.error?.message ?? 'E-mail ou senha inválidos.' };
       }
       const d = res.data!;
-      setTokens(d.accessToken, d.refreshToken ?? '');
-      if (d.profile) setState((s) => ({ ...s, user: d.profile! }));
-      else await loadUser(d.accessToken);
+      setTokens(d.access_token, d.refresh_token ?? '');
+      if (d.advogado) setState((s) => ({ ...s, user: d.advogado as unknown as Profile }));
+      else await loadUser(d.access_token);
       return { ok: true };
     },
     [setTokens, loadUser]
@@ -91,9 +91,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: res.error?.message ?? 'Falha no cadastro.' };
       }
       const d = res.data!;
-      setTokens(d.accessToken, d.refreshToken ?? '');
-      if (d.profile) setState((s) => ({ ...s, user: d.profile! }));
-      else await loadUser(d.accessToken);
+      setTokens(d.access_token, d.refresh_token ?? '');
+      if (d.advogado) setState((s) => ({ ...s, user: d.advogado as unknown as Profile }));
+      else await loadUser(d.access_token);
       return { ok: true };
     },
     [setTokens, loadUser]

@@ -1,13 +1,15 @@
 namespace Agile360.Domain.Entities;
 
 /// <summary>
-/// Base entity for all tenant-aware entities. Id, audit fields, and AdvogadoId (tenant key).
+/// Base para todas as entidades tenant-aware.
+/// id_advogado é a FK para auth.users (chave de tenant/RLS).
+/// Timestamps são gerenciados pelo Supabase (DEFAULT now()).
 /// </summary>
 public abstract class BaseEntity
 {
+    /// <summary>id — uuid (PK)</summary>
     public Guid Id { get; set; }
-    public DateTimeOffset CreatedAt { get; set; }
-    public DateTimeOffset UpdatedAt { get; set; }
-    public bool IsActive { get; set; } = true;
-    public Guid AdvogadoId { get; set; }
+
+    /// <summary>id_advogado — uuid (FK para auth.users / tenant key)</summary>
+    public Guid IdAdvogado { get; set; }
 }

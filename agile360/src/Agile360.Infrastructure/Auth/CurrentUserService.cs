@@ -33,4 +33,19 @@ public class CurrentUserService : ICurrentUserService
         ?? _httpContextAccessor.HttpContext?.User?.FindFirst(ClaimTypes.Name)?.Value ?? string.Empty;
 
     public bool IsAuthenticated => _httpContextAccessor.HttpContext?.User?.Identity?.IsAuthenticated == true;
+
+    /// <summary>
+    /// Token bruto do cabeçalho Authorization: Bearer &lt;token&gt;.
+    /// Passado diretamente para o Supabase Data API para que o RLS seja aplicado.
+    /// </summary>
+    public string? AccessToken
+    {
+        get
+        {
+            var header = _httpContextAccessor.HttpContext?.Request.Headers["Authorization"].FirstOrDefault();
+            return header?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+                ? header["Bearer ".Length..]
+                : null;
+        }
+    }
 }

@@ -30,7 +30,7 @@ public class SupabaseAuthClient
     public async Task<SupabaseTokenResponse?> TokenAsync(string email, string password, CancellationToken ct = default)
     {
         var body = new { email, password, grant_type = "password" };
-        var res = await _http.PostAsJsonAsync("token?grant_type=password", body, JsonOptions, ct);
+        var res = await _http.PostAsJsonAsync("token?grant_type=password", body, JsonOptions, ct); 
         return await ReadAsResultAsync<SupabaseTokenResponse>(res, ct);
     }
 

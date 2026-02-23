@@ -1,19 +1,16 @@
 using Agile360.Domain.Interfaces;
-using Microsoft.EntityFrameworkCore;
 
 namespace Agile360.Infrastructure.Data;
 
+/// <summary>
+/// Unit of Work adaptado para PostgREST: cada operação de repositório é imediatamente
+/// commitada via HTTP, portanto SaveChangesAsync é um no-op (retorna 0).
+/// Mantido para compatibilidade de interface com a camada de Aplicação.
+/// </summary>
 public class UnitOfWork : IUnitOfWork
 {
-    private readonly Agile360DbContext _context;
-
-    public UnitOfWork(Agile360DbContext context)
-    {
-        _context = context;
-    }
-
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) =>
-        _context.SaveChangesAsync(cancellationToken);
+        Task.FromResult(0);
 
-    public void Dispose() => _context.Dispose();
+    public void Dispose() { }
 }

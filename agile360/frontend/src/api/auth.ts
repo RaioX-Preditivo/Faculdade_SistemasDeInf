@@ -1,10 +1,10 @@
 import { api, ApiResponse } from './client';
 
 export interface AuthResponse {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: string;
-  profile?: { id: string; nome: string; email: string; oab: string };
+  access_token: string;
+  refresh_token: string;
+  expires_at: string;
+  advogado?: { id: string; nome: string; email: string; numero_oab: string };
 }
 
 export interface Profile {

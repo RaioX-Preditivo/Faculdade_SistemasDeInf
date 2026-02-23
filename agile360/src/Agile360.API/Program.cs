@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.IdentityModel.JsonWebTokens;
 using Agile360.API.Middleware;
 using Agile360.API.MultiTenancy;
 using Agile360.Application;
@@ -21,123 +22,141 @@ builder.Host.UseSerilog((ctx, lc) =>
           outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}");
 });
 
-// JWT (Story 1.3)
-var jwtSecret = builder.Configuration["JwtSettings:Secret"] ?? "";
-var jwtIssuer = builder.Configuration["JwtSettings:Issuer"] ?? "";
+// ─── JWT — valida tokens emitidos pelo Supabase Auth ─────────────────────────
+// Configure em appsettings.Development.json (ou User Secrets):
+//   JwtSettings:Secret   = JWT secret do projeto Supabase (Settings → API → JWT Secret)
+//   JwtSettings:Issuer   = https://<SEU_REF>.supabase.co/auth/v1
+//   JwtSettings:Audience = authenticated
+//
+// Valores com '<' são placeholders — não ativam a validação correspondente.
+var jwtSecret   = builder.Configuration["JwtSettings:Secret"]   ?? "";
+var jwtIssuer   = builder.Configuration["JwtSettings:Issuer"]   ?? "";
 var jwtAudience = builder.Configuration["JwtSettings:Audience"] ?? "authenticated";
+
+// Só valida se o valor for real (não placeholder)
+var validateIssuer = !string.IsNullOrEmpty(jwtIssuer) && !jwtIssuer.Contains('<');
+var validateKey    = !string.IsNullOrEmpty(jwtSecret)  && !jwtSecret.Contains('<');
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuer = true,
-            ValidIssuer = jwtIssuer,
-            ValidateAudience = true,
-            ValidAudience = jwtAudience,
-            ValidateIssuerSigningKey = !string.IsNullOrEmpty(jwtSecret),
-            IssuerSigningKey = string.IsNullOrEmpty(jwtSecret) ? null : new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
-            ValidateLifetime = true,
-            ClockSkew = TimeSpan.Zero
+            ValidateIssuer           = validateIssuer,
+            ValidIssuer              = jwtIssuer,
+            ValidateAudience         = true,
+            ValidAudience            = jwtAudience,
+            ValidateIssuerSigningKey = validateKey,
+            IssuerSigningKey         = validateKey
+                                           ? new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
+                                           : null,
+            RequireSignedTokens      = validateKey,
+            ValidateLifetime         = true,
+            ClockSkew                = TimeSpan.Zero,
+
+            // ─── Bypass de assinatura quando Secret não está configurado ─────
+            // .NET 8+ usa JsonWebTokenHandler; o SignatureValidator deve retornar
+            // JsonWebToken (não JwtSecurityToken) para ser aceito pelo handler.
+            // PRODUÇÃO: configure JwtSettings:Secret (Supabase → Settings → API → JWT Secret).
+            SignatureValidator = validateKey
+                ? null
+                : (token, _) => new JsonWebTokenHandler().ReadJsonWebToken(token),
+        };
+
+        // ─── Logging de falhas de autenticação (diagnóstico) ─────────────────
+        options.Events = new JwtBearerEvents
+        {
+            OnAuthenticationFailed = ctx =>
+            {
+                Log.Warning("[JWT] Token rejeitado: {Reason}", ctx.Exception.Message);
+                return Task.CompletedTask;
+            },
+            OnTokenValidated = ctx =>
+            {
+                var sub = ctx.Principal?.FindFirst("sub")?.Value ?? "(sem sub)";
+                Log.Debug("[JWT] Token válido — sub: {Sub}", sub);
+                return Task.CompletedTask;
+            }
         };
     });
 builder.Services.AddAuthorization();
 
-// Rate limiting (Story 1.3)
+// ─── Rate limiting ────────────────────────────────────────────────────────────
 builder.Services.AddRateLimiter(options =>
 {
-    options.AddFixedWindowLimiter("auth-login", config =>
-    {
-        config.Window = TimeSpan.FromMinutes(1);
-        config.PermitLimit = 5;
-    });
-    options.AddFixedWindowLimiter("auth-register", config =>
-    {
-        config.Window = TimeSpan.FromHours(1);
-        config.PermitLimit = 3;
-    });
-    options.AddFixedWindowLimiter("auth-forgot", config =>
-    {
-        config.Window = TimeSpan.FromHours(1);
-        config.PermitLimit = 3;
-    });
+    options.AddFixedWindowLimiter("auth-login",    c => { c.Window = TimeSpan.FromMinutes(1); c.PermitLimit = 5; });
+    options.AddFixedWindowLimiter("auth-register", c => { c.Window = TimeSpan.FromHours(1);   c.PermitLimit = 3; });
+    options.AddFixedWindowLimiter("auth-forgot",   c => { c.Window = TimeSpan.FromHours(1);   c.PermitLimit = 3; });
 });
 
-// CORS
-var allowedOrigins = builder.Configuration.GetSection("CORS:AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+var allowedOrigins = builder.Configuration.GetSection("CORS:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
-    {
-        policy.WithOrigins(allowedOrigins)
-              .AllowAnyMethod()
-              .AllowAnyHeader();
-    });
+        policy.WithOrigins(allowedOrigins).AllowAnyMethod().AllowAnyHeader());
 });
 
-// Controllers + JSON
+// ─── Controllers + JSON ───────────────────────────────────────────────────────
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
-        options.JsonSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+        // snake_case alinha com o frontend (nome_completo, access_token, etc.)
+        // e com o padrão do Supabase PostgREST.
+        options.JsonSerializerOptions.PropertyNamingPolicy        = System.Text.Json.JsonNamingPolicy.SnakeCaseLower;
+        options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
         options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
     });
 
-// OpenAPI / Swagger
+// ─── Swagger ──────────────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
     {
-        Title = "Agile360 API",
-        Version = "v1",
+        Title       = "Agile360 API",
+        Version     = "v1",
         Description = "Agile360 – CRM Jurídico API"
     });
 });
 
-// Webhook auth (Story 1.4)
+// ─── Webhook / Tenant ─────────────────────────────────────────────────────────
 builder.Services.Configure<WebhookOptions>(builder.Configuration.GetSection(WebhookOptions.SectionName));
-
-// Tenant (Story 1.2); JWT via ICurrentUserService (Story 1.3)
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantProvider, TenantProvider>();
 
-// Application & Infrastructure (DbContext, MediatR, Auth, etc.)
+// ─── Application & Infrastructure ─────────────────────────────────────────────
 builder.Services.AddApplicationServices(builder.Configuration);
 builder.Services.AddInfrastructureServices(builder.Configuration);
 
 var app = builder.Build();
 
-// Security headers (Story 1.3)
+// Security headers
 app.Use(async (context, next) =>
 {
     context.Response.Headers.XContentTypeOptions = "nosniff";
-    context.Response.Headers.XFrameOptions = "DENY";
+    context.Response.Headers.XFrameOptions       = "DENY";
     if (app.Environment.IsProduction())
         context.Response.Headers.StrictTransportSecurity = "max-age=31536000; includeSubDomains";
     await next();
 });
 
-// Global exception handling (must be early in pipeline)
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 app.UseMiddleware<WebhookAuthMiddleware>();
 app.UseAuthentication();
 app.UseMiddleware<TenantMiddleware>();
 app.UseAuthorization();
 app.UseRateLimiter();
-
-// Correlation ID for logging
 app.UseSerilogRequestLogging();
 
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(options => options.SwaggerEndpoint("/swagger/v1/swagger.json", "Agile360 API v1"));
+    app.UseSwaggerUI(o => o.SwaggerEndpoint("/swagger/v1/swagger.json", "Agile360 API v1"));
 }
 
 app.UseCors();
 app.MapControllers();
-
-// Health checks endpoint (also available via controller /api/health)
 app.MapHealthChecks("/health");
 
 try

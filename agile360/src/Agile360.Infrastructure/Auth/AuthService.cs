@@ -2,150 +2,182 @@ using Agile360.Application.Auth.DTOs;
 using Agile360.Application.Interfaces;
 using Agile360.Domain.Entities;
 using Agile360.Infrastructure.Data;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using System.Text;
-using System.IdentityModel.Tokens.Jwt;
-using Microsoft.IdentityModel.Tokens;
-using System.Security.Claims;
 
 namespace Agile360.Infrastructure.Auth;
 
+/// <summary>
+/// Serviço de autenticação alinhado ao padrão Supabase Data API:
+///
+///   Passo 1 — Autenticação:  chama TokenAsync do SupabaseAuthClient.
+///   Passo 2 — O "Crachá":   Supabase devolve um AccessToken (JWT).
+///   Passo 3 — Consulta:     envia esse AccessToken em Authorization: Bearer
+///                           para a Data API (/rest/v1/advogado).
+///
+/// Nenhuma autenticação local existe — tudo é delegado ao Supabase Auth.
+/// </summary>
 public class AuthService : IAuthService
 {
     private readonly SupabaseAuthClient _authClient;
-    private readonly Agile360DbContext _db;
-    private readonly IConfiguration _configuration;
+    private readonly SupabaseDataClient _dataClient;
 
-    public AuthService(SupabaseAuthClient authClient, Agile360DbContext db, IConfiguration configuration)
+    /// <summary>
+    /// Nome real da tabela no Supabase (conforme configuração da entidade).
+    /// URL resultante: /rest/v1/advogado
+    /// </summary>
+    private const string AdvogadosTable = "advogado";
+
+    public AuthService(SupabaseAuthClient authClient, SupabaseDataClient dataClient)
     {
         _authClient = authClient;
-        _db = db;
-        _configuration = configuration;
+        _dataClient = dataClient;
     }
 
-    public async Task<AuthResult> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default)
+    // ─── Registro ────────────────────────────────────────────────────────────────
+
+    public async Task<AuthResult> RegisterAsync(RegisterRequest request, CancellationToken ct = default)
     {
+        // Passo 1: Cria usuário no Supabase Auth → recebe AccessToken
         var data = new { nome = request.Nome, oab = request.OAB, telefone = request.Telefone };
-        var res = await _authClient.SignUpAsync(request.Email, request.Password, data, cancellationToken);
+        var res = await _authClient.SignUpAsync(request.Email, request.Password, data, ct);
         if (res?.AccessToken == null)
             return AuthResult.Fail("Falha no registro. Verifique os dados ou tente outro e-mail.");
 
-        var userId = res.User?.Id;
-        var advogadoId = Guid.TryParse(userId, out var id) ? id : Guid.Empty;
-        if (advogadoId != Guid.Empty)
+        // Passo 2: Usando o AccessToken para atualizar os dados do advogado na Data API
+        // PATCH /rest/v1/advogado?Id=eq.{id}   Authorization: Bearer <AccessToken>
+        if (Guid.TryParse(res.User?.Id, out var advogadoId) && advogadoId != Guid.Empty)
         {
-            var advogado = await _db.Advogados.IgnoreQueryFilters().FirstOrDefaultAsync(a => a.Id == advogadoId, cancellationToken);
-            if (advogado != null)
-            {
-                advogado.OAB = request.OAB;
-                advogado.Telefone = request.Telefone;
-                advogado.UpdatedAt = DateTimeOffset.UtcNow;
-                await _db.SaveChangesAsync(cancellationToken);
-            }
+            await _dataClient.PatchAsync(
+                AdvogadosTable,
+                $"id=eq.{advogadoId}",
+                new
+                {
+                    numero_oab       = request.OAB,
+                    oab_uf           = request.OabUf,
+                    telefone_contato = request.Telefone,
+                    nome_escritorio  = request.NomeEscritorio
+                },
+                res.AccessToken,
+                ct);
         }
 
+        var profile   = await GetProfileByIdAsync(advogadoId, res.AccessToken, ct);
         var expiresAt = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
-        var profile = await BuildProfileFromTokenAsync(res.AccessToken, advogadoId, cancellationToken);
         return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
     }
 
-    public async Task<AuthResult> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default)
-    {
-        // Authenticate against local advogado table using PasswordHash
-        var advogado = await _db.Advogados.AsNoTracking().FirstOrDefaultAsync(a => a.Email == request.Email, cancellationToken);
-        if (advogado == null || string.IsNullOrEmpty(advogado.PasswordHash))
-        {
-            // Fallback: try Supabase auth if configured (legacy)
-            var res = await _authClient.TokenAsync(request.Email, request.Password, cancellationToken);
-            if (res?.AccessToken == null)
-                return AuthResult.Fail("E-mail ou senha inválidos.");
-            var userId = res.User?.Id;
-            Guid advogadoId = Guid.TryParse(userId, out var id) ? id : Guid.Empty;
-            var profile = await BuildProfileFromTokenAsync(res.AccessToken, advogadoId, cancellationToken);
-            var expiresAt = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
-            return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
-        }
+    // ─── Login ───────────────────────────────────────────────────────────────────
 
-        // Verify password
-        var ok = PasswordHasher.Verify(request.Password, advogado.PasswordHash);
-        if (!ok)
+    public async Task<AuthResult> LoginAsync(LoginRequest request, CancellationToken ct = default)
+    {
+        // ──────────────────────────────────────────────────────────────────────
+        // Passo 1 — Autenticação
+        //   POST https://<project>.supabase.co/auth/v1/token?grant_type=password
+        //   Headers: apikey: <AnonKey>
+        //   Body:    { email, password }
+        // ──────────────────────────────────────────────────────────────────────
+        var res = await _authClient.TokenAsync(request.Email, request.Password, ct);
+        if (res?.AccessToken == null)
             return AuthResult.Fail("E-mail ou senha inválidos.");
 
-        // Create JWT token for this advogado
-        var jwtSecret = _configuration["JwtSettings:Secret"] ?? "";
-        var jwtIssuer = _configuration["JwtSettings:Issuer"] ?? "";
-        var jwtAudience = _configuration["JwtSettings:Audience"] ?? "authenticated";
-        var expires = DateTimeOffset.UtcNow.AddHours(1);
+        // ──────────────────────────────────────────────────────────────────────
+        // Passo 2 — O "Crachá": Supabase devolveu um AccessToken (JWT)
+        //   res.AccessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        // ──────────────────────────────────────────────────────────────────────
+        Guid advogadoId = Guid.TryParse(res.User?.Id, out var id) ? id : Guid.Empty;
 
-        var tokenHandler = new System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler();
-        var key = string.IsNullOrEmpty(jwtSecret) ? null : new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret));
-        var creds = key == null ? null : new Microsoft.IdentityModel.Tokens.SigningCredentials(key, Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256);
-        var claims = new[]
-        {
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, advogado.Id.ToString()),
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Name, advogado.Nome),
-            new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Email, advogado.Email)
-        };
-        var jwt = new System.IdentityModel.Tokens.Jwt.JwtSecurityToken(
-            issuer: string.IsNullOrEmpty(jwtIssuer) ? null : jwtIssuer,
-            audience: jwtAudience,
-            claims: claims,
-            notBefore: DateTime.UtcNow,
-            expires: expires.UtcDateTime,
-            signingCredentials: creds);
-        var accessToken = tokenHandler.WriteToken(jwt);
+        // ──────────────────────────────────────────────────────────────────────
+        // Passo 3 — Consulta de dados usando o AccessToken
+        //   GET https://<project>.supabase.co/rest/v1/advogado?Id=eq.{id}
+        //   Headers: apikey: <AnonKey>
+        //            Authorization: Bearer <AccessToken>   ← o "crachá"
+        // ──────────────────────────────────────────────────────────────────────
+        var profile   = await GetProfileByIdAsync(advogadoId, res.AccessToken, ct);
+        var expiresAt = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
 
-        var profileResp = new Application.Auth.DTOs.AdvogadoProfileResponse(advogado.Id, advogado.Nome, advogado.Email);
-        return AuthResult.Ok(new AuthResponse(accessToken, string.Empty, expires, profileResp));
+        return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
     }
 
-    public async Task<AuthResult?> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default)
-    {
-        var res = await _authClient.RefreshTokenAsync(refreshToken, cancellationToken);
-        if (res?.AccessToken == null)
-            return null;
+    // ─── Refresh ─────────────────────────────────────────────────────────────────
 
-        var userId = res.User?.Id;
-        Guid advogadoId = Guid.TryParse(userId, out var id) ? id : Guid.Empty;
-        var profile = await BuildProfileFromTokenAsync(res.AccessToken, advogadoId, cancellationToken);
+    public async Task<AuthResult?> RefreshTokenAsync(string refreshToken, CancellationToken ct = default)
+    {
+        var res = await _authClient.RefreshTokenAsync(refreshToken, ct);
+        if (res?.AccessToken == null) return null;
+
+        Guid advogadoId = Guid.TryParse(res.User?.Id, out var id) ? id : Guid.Empty;
+        var profile   = await GetProfileByIdAsync(advogadoId, res.AccessToken, ct);
         var expiresAt = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
         return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
     }
 
-    public Task LogoutAsync(string accessToken, CancellationToken cancellationToken = default) =>
-        _authClient.LogoutAsync(accessToken, cancellationToken);
+    // ─── Logout / Recovery ───────────────────────────────────────────────────────
 
-    public Task ForgotPasswordAsync(string email, CancellationToken cancellationToken = default) =>
-        _authClient.RecoverAsync(email, cancellationToken);
+    public Task LogoutAsync(string accessToken, CancellationToken ct = default) =>
+        _authClient.LogoutAsync(accessToken, ct);
 
-    public async Task ResetPasswordAsync(string token, string newPassword, CancellationToken cancellationToken = default)
+    public Task ForgotPasswordAsync(string email, CancellationToken ct = default) =>
+        _authClient.RecoverAsync(email, ct);
+
+    public async Task ResetPasswordAsync(string token, string newPassword, CancellationToken ct = default)
     {
-        var ok = await _authClient.UpdatePasswordAsync(token, newPassword, cancellationToken);
-        if (!ok)
-            throw new InvalidOperationException("Falha ao redefinir senha.");
+        var ok = await _authClient.UpdatePasswordAsync(token, newPassword, ct);
+        if (!ok) throw new InvalidOperationException("Falha ao redefinir senha.");
     }
 
-    public async Task<AdvogadoProfileResponse?> GetProfileAsync(string accessToken, CancellationToken cancellationToken = default)
+    // ─── Perfil (GET /api/auth/me) ───────────────────────────────────────────────
+
+    public async Task<AdvogadoProfileResponse?> GetProfileAsync(string accessToken, CancellationToken ct = default)
     {
-        var user = await _authClient.GetUserAsync(accessToken, cancellationToken);
-        if (user?.Id == null || !Guid.TryParse(user.Id, out var advogadoId))
-            return null;
-        return await BuildProfileFromDbAsync(advogadoId, cancellationToken);
+        var user = await _authClient.GetUserAsync(accessToken, ct);
+        if (user?.Id == null || !Guid.TryParse(user.Id, out var advogadoId)) return null;
+
+        // Usa o próprio AccessToken do usuário para consultar o perfil
+        return await GetProfileByIdAsync(advogadoId, accessToken, ct);
     }
 
-    private async Task<AdvogadoProfileResponse?> BuildProfileFromTokenAsync(string accessToken, Guid advogadoId, CancellationToken ct)
-    {
-        var profile = await BuildProfileFromDbAsync(advogadoId, ct);
-        return profile;
-    }
+    // ─── Auxiliar ─────────────────────────────────────────────────────────────────
 
-    private async Task<AdvogadoProfileResponse?> BuildProfileFromDbAsync(Guid advogadoId, CancellationToken ct)
+    /// <summary>
+    /// Consulta o perfil do advogado via Supabase Data API usando o AccessToken do usuário.
+    ///   GET /rest/v1/advogado?Id=eq.{id}
+    ///   Headers: apikey: {AnonKey}
+    ///            Authorization: Bearer {accessToken}
+    ///
+    /// Se o ServiceRoleKey estiver configurado (ambiente servidor), usa-o como fallback
+    /// para garantir que a consulta funcione mesmo sem RLS configurado na tabela advogado.
+    /// </summary>
+    private async Task<AdvogadoProfileResponse?> GetProfileByIdAsync(
+        Guid advogadoId, string accessToken, CancellationToken ct)
     {
-        var adv = await _db.Advogados.IgnoreQueryFilters()
-            .AsNoTracking()
-            .FirstOrDefaultAsync(a => a.Id == advogadoId, ct);
+        if (advogadoId == Guid.Empty) return null;
+
+        // Prefere o AccessToken do usuário; cai para ServiceToken como fallback administrativo
+        var token = !string.IsNullOrEmpty(accessToken)
+            ? accessToken
+            : _dataClient.ServiceToken;
+
+        var adv = await _dataClient.GetSingleAsync<Advogado>(
+            AdvogadosTable,
+            $"id=eq.{advogadoId}",      // ← snake_case: coluna "id" no PostgreSQL
+            token,
+            ct);
+
         if (adv == null) return null;
-        return new AdvogadoProfileResponse(adv.Id, adv.Nome, adv.Email);
+
+        return new AdvogadoProfileResponse(
+            Id:               adv.Id,
+            Nome:             adv.Nome,
+            Email:            adv.Email,
+            Role:             adv.Role,
+            NumeroOab:        adv.NumeroOab,
+            OabUf:            adv.OabUf,
+            NomeEscritorio:   adv.NomeEscritorio,
+            Plano:            adv.Plano,
+            StatusAssinatura: adv.StatusAssinatura,
+            LogoUrl:          adv.LogoUrl,
+            TelefoneContato:  adv.TelefoneContato,
+            Cidade:           adv.Cidade,
+            Estado:           adv.Estado,
+            DataExpiracao:    adv.DataExpiracao);
     }
 }

@@ -1,246 +1,216 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using Agile360.Application.Interfaces;
 using Agile360.Domain.Entities;
-using Agile360.Domain.Enums;
-using Agile360.Domain.Interfaces;
+using Agile360.Infrastructure.Auth;
 using Agile360.Infrastructure.Data;
-using Agile360.Infrastructure.Data.Interceptors;
 using Agile360.Infrastructure.Repositories;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Agile360.IntegrationTests.MultiTenancy;
 
 /// <summary>
-/// Phase 4: Multi-Tenancy isolation tests. Uses SQLite in-memory + real DbContext with query filters and interceptor.
+/// Testa o isolamento multi-tenant via Supabase PostgREST:
+/// verifica que cada repositório envia Authorization: Bearer com o token do usuário,
+/// garantindo que o RLS do Supabase filtre os dados pelo AdvogadoId = auth.uid().
+/// Usa um HttpMessageHandler mockado para interceptar as chamadas HTTP.
 /// </summary>
-public class TenantIsolationTests : IDisposable
+public class TenantIsolationTests
 {
-    private readonly SqliteConnection _connection;
-    private readonly TestTenantProvider _tenantProvider;
+    private const string FakeToken    = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature";
+    private const string FakeBaseUrl  = "https://test.supabase.co";
+    private const string FakeAnonKey  = "anon-key-test";
 
-    public TenantIsolationTests()
+    private static readonly JsonSerializerOptions JsonOpts = new()
     {
-        _connection = new SqliteConnection("DataSource=:memory:");
-        _connection.Open();
-        _tenantProvider = new TestTenantProvider();
+        PropertyNamingPolicy = null
+    };
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+    private static (SupabaseDataClient client, List<HttpRequestMessage> captured, MockHttpHandler handler)
+        BuildClientWithCapture(HttpResponseMessage response)
+    {
+        var captured = new List<HttpRequestMessage>();
+        var handler  = new MockHttpHandler(req =>
+        {
+            captured.Add(req);
+            return Task.FromResult(response);
+        });
+        var http    = new HttpClient(handler);
+        var options = Options.Create(new SupabaseAuthOptions
+        {
+            BaseUrl        = FakeBaseUrl,
+            AnonKey        = FakeAnonKey,
+            ServiceRoleKey = "service-role-key"
+        });
+        var dataClient = new SupabaseDataClient(http, options);
+        return (dataClient, captured, handler);
     }
 
-    private Agile360DbContext CreateContext()
+    private static ICurrentUserService FakeUser(Guid advogadoId, string token = FakeToken)
     {
-        var options = new DbContextOptionsBuilder<Agile360DbContext>()
-            .UseSqlite(_connection)
-            .AddInterceptors(
-                new TenantSaveChangesInterceptor(_tenantProvider),
-                new AuditSaveChangesInterceptor(_tenantProvider))
-            .Options;
-        return new Agile360DbContext(options, _tenantProvider);
+        var svc = new FakeCurrentUserService
+        {
+            AdvogadoId    = advogadoId,
+            AccessToken   = token,
+            IsAuthenticated = true
+        };
+        return svc;
     }
 
-    private static void EnsureCreatedAndSeed(Agile360DbContext context)
+    private static HttpResponseMessage JsonResponse<T>(T payload)
     {
-        context.Database.EnsureCreated();
+        var json    = JsonSerializer.Serialize(new[] { payload }, JsonOpts);
+        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
 
-        if (context.Advogados.Any())
-            return;
+    private static HttpResponseMessage EmptyListResponse()
+    {
+        var content = new StringContent("[]", Encoding.UTF8, "application/json");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+    }
 
-        var advogadoA = new Advogado
-        {
-            Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            Nome = "Advogado A",
-            Email = "a@test.com",
-            OAB = "OAB/SP 111111",
-            Ativo = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        var advogadoB = new Advogado
-        {
-            Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
-            Nome = "Advogado B",
-            Email = "b@test.com",
-            OAB = "OAB/SP 222222",
-            Ativo = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        context.Advogados.AddRange(advogadoA, advogadoB);
+    // ─── Testes ───────────────────────────────────────────────────────────────────
 
-        var clienteA = new Cliente
-        {
-            Id = Guid.NewGuid(),
-            AdvogadoId = advogadoA.Id,
-            Nome = "Cliente de A",
-            Origem = OrigemCliente.Manual,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        var clienteB = new Cliente
-        {
-            Id = Guid.NewGuid(),
-            AdvogadoId = advogadoB.Id,
-            Nome = "Cliente de B",
-            Origem = OrigemCliente.Manual,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        context.Clientes.AddRange(clienteA, clienteB);
+    [Fact]
+    public async Task GetAllAsync_SendsAuthorizationBearerToken()
+    {
+        var advogadoId = Guid.NewGuid();
+        var (client, captured, _) = BuildClientWithCapture(EmptyListResponse());
+        var repo = new Repository<Cliente>(client, FakeUser(advogadoId));
 
-        var processoA = new Processo
-        {
-            Id = Guid.NewGuid(),
-            AdvogadoId = advogadoA.Id,
-            ClienteId = clienteA.Id,
-            NumeroProcesso = "0000000-00.2024.8.26.0100",
-            Status = StatusProcesso.Ativo,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        var processoB = new Processo
-        {
-            Id = Guid.NewGuid(),
-            AdvogadoId = advogadoB.Id,
-            ClienteId = clienteB.Id,
-            NumeroProcesso = "0000000-00.2024.8.26.0200",
-            Status = StatusProcesso.Ativo,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        context.Processos.AddRange(processoA, processoB);
-        context.SaveChanges();
+        await repo.GetAllAsync();
+
+        captured.Should().HaveCount(1);
+        var req = captured[0];
+        req.Headers.Authorization.Should().NotBeNull();
+        req.Headers.Authorization!.Scheme.Should().Be("Bearer");
+        req.Headers.Authorization.Parameter.Should().Be(FakeToken);
     }
 
     [Fact]
-    public void QueryFilter_AdvogadoA_DoesNotSeeClientesOfAdvogadoB()
+    public async Task GetAllAsync_UrlContainsCorrectTable()
     {
-        using var context = CreateContext();
-        EnsureCreatedAndSeed(context);
+        var (client, captured, _) = BuildClientWithCapture(EmptyListResponse());
+        var repo = new Repository<Cliente>(client, FakeUser(Guid.NewGuid()));
 
-        _tenantProvider.SetCurrentAdvogadoId(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        await repo.GetAllAsync();
 
-        var clientes = context.Clientes.ToList();
-
-        clientes.Should().HaveCount(1);
-        clientes[0].Nome.Should().Be("Cliente de A");
-        clientes[0].AdvogadoId.Should().Be(_tenantProvider.GetCurrentAdvogadoId());
+        captured[0].RequestUri!.AbsoluteUri.Should().Contain("/rest/v1/cliente"); // tabela singular
     }
 
     [Fact]
-    public void QueryFilter_AdvogadoA_ProcessosListIsIsolatedByTenant()
+    public async Task GetByIdAsync_SendsBearerTokenAndIdFilter()
     {
-        using var context = CreateContext();
-        EnsureCreatedAndSeed(context);
+        var id         = Guid.NewGuid();
+        var advogadoId = Guid.NewGuid();
+        var cliente    = new Cliente { Id = id, IdAdvogado = advogadoId, NomeCompleto = "Teste" };
 
-        _tenantProvider.SetCurrentAdvogadoId(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        var (client, captured, _) = BuildClientWithCapture(JsonResponse(cliente));
+        var repo = new Repository<Cliente>(client, FakeUser(advogadoId));
 
-        var processos = context.Processos.ToList();
+        var result = await repo.GetByIdAsync(id);
 
-        processos.Should().HaveCount(1);
-        processos[0].AdvogadoId.Should().Be(_tenantProvider.GetCurrentAdvogadoId());
-        processos[0].NumeroProcesso.Should().Contain("0100");
+        captured.Should().HaveCount(1);
+        captured[0].RequestUri!.Query.Should().Contain($"id=eq.{id}");   // snake_case
+        captured[0].Headers.Authorization!.Parameter.Should().Be(FakeToken);
+        result.Should().NotBeNull();
+        result!.Id.Should().Be(id);
     }
 
     [Fact]
-    public void Insert_NewClienteWithoutAdvogadoId_ReceivesCurrentTenantFromInterceptor()
+    public async Task AddAsync_SetsAdvogadoIdFromCurrentUser()
     {
-        using var context = CreateContext();
-        EnsureCreatedAndSeed(context);
+        var advogadoId = Guid.NewGuid();
+        var novoCliente = new Cliente { NomeCompleto = "Novo Cliente" };
 
-        var advogadoAId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        _tenantProvider.SetCurrentAdvogadoId(advogadoAId);
+        var (client, _, handler) = BuildClientWithCapture(
+            new HttpResponseMessage(HttpStatusCode.Created)
+            {
+                Content = new StringContent(
+                    JsonSerializer.Serialize(new[] { novoCliente }, JsonOpts),
+                    Encoding.UTF8, "application/json")
+            });
 
-        var novoCliente = new Cliente
-        {
-            Id = Guid.NewGuid(),
-            AdvogadoId = Guid.Empty,
-            Nome = "Novo Cliente",
-            Origem = OrigemCliente.Manual,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        context.Clientes.Add(novoCliente);
-        context.SaveChanges();
+        var repo = new Repository<Cliente>(client, FakeUser(advogadoId));
 
-        novoCliente.AdvogadoId.Should().Be(advogadoAId);
+        await repo.AddAsync(novoCliente);
 
-        var fromDb = context.Clientes.First(c => c.Id == novoCliente.Id);
-        fromDb.AdvogadoId.Should().Be(advogadoAId);
+        // O corpo enviado ao PostgREST deve conter o AdvogadoId do usuário autenticado
+        handler.RequestBodies.Should().HaveCount(1);
+        handler.RequestBodies[0].Should().Contain(advogadoId.ToString());
     }
 
     [Fact]
-    public void Insert_ProcessoWithTenant_FillsCreatedByAndLastModifiedByAndWritesAuditLog()
+    public async Task RemoveAsync_SendsDeleteWithBearerAndIdFilter()
     {
-        using var context = CreateContext();
-        EnsureCreatedAndSeed(context);
+        var id         = Guid.NewGuid();
+        var advogadoId = Guid.NewGuid();
+        var cliente    = new Cliente { Id = id, IdAdvogado = advogadoId, NomeCompleto = "Del" };
 
-        var advogadoAId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        _tenantProvider.SetCurrentAdvogadoId(advogadoAId);
+        var (client, captured, _) = BuildClientWithCapture(
+            new HttpResponseMessage(HttpStatusCode.NoContent));
 
-        var clienteAId = context.Clientes
-            .IgnoreQueryFilters()
-            .First(c => c.AdvogadoId == advogadoAId).Id;
+        var repo = new Repository<Cliente>(client, FakeUser(advogadoId));
+        await repo.RemoveAsync(cliente);
 
-        var processoId = Guid.NewGuid();
-        var novoProcesso = new Processo
-        {
-            Id = processoId,
-            AdvogadoId = advogadoAId,
-            ClienteId = clienteAId,
-            NumeroProcesso = "0000000-00.2024.8.26.0300",
-            Status = StatusProcesso.Ativo,
-            IsActive = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        };
-        context.Processos.Add(novoProcesso);
-        context.SaveChanges();
-
-        var createdBy = context.Processos
-            .IgnoreQueryFilters()
-            .Where(p => p.Id == processoId)
-            .Select(p => EF.Property<Guid?>(p, "CreatedBy"))
-            .FirstOrDefault();
-        var lastModifiedBy = context.Processos
-            .IgnoreQueryFilters()
-            .Where(p => p.Id == processoId)
-            .Select(p => EF.Property<Guid?>(p, "LastModifiedBy"))
-            .FirstOrDefault();
-
-        createdBy.Should().Be(advogadoAId);
-        lastModifiedBy.Should().Be(advogadoAId);
-
-        var auditLog = context.AuditLogs
-            .IgnoreQueryFilters()
-            .FirstOrDefault(al => al.EntityName == "Processo" && al.EntityId == processoId);
-        auditLog.Should().NotBeNull();
-        auditLog!.Action.Should().Be(AuditAction.Created);
-        auditLog.AdvogadoId.Should().Be(advogadoAId);
-        auditLog.NewValues.Should().NotBeNullOrEmpty();
+        captured[0].Method.Should().Be(HttpMethod.Delete);
+        captured[0].RequestUri!.Query.Should().Contain($"id=eq.{id}");   // snake_case
+        captured[0].Headers.Authorization!.Parameter.Should().Be(FakeToken);
     }
 
     [Fact]
-    public async Task GetById_ClienteOfOtherTenant_ReturnsNull()
+    public async Task DifferentUsers_ReceiveDifferentBearerTokens()
     {
-        var advogadoBId = Guid.Parse("22222222-2222-2222-2222-222222222222");
-        using var context = CreateContext();
-        EnsureCreatedAndSeed(context);
+        // Garante que o token enviado ao Supabase é o do usuário atual (a base do RLS)
+        var tokenA = "token-usuario-A";
+        var tokenB = "token-usuario-B";
 
-        Guid clienteBId = context.Clientes
-            .IgnoreQueryFilters()
-            .First(c => c.AdvogadoId == advogadoBId).Id;
+        var (clientA, capturedA, _)  = BuildClientWithCapture(EmptyListResponse());
+        var (clientB, capturedB, __) = BuildClientWithCapture(EmptyListResponse());
 
-        _tenantProvider.SetCurrentAdvogadoId(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        var repoA = new Repository<Processo>(clientA, FakeUser(Guid.NewGuid(), tokenA));
+        var repoB = new Repository<Processo>(clientB, FakeUser(Guid.NewGuid(), tokenB));
 
-        var repository = new ClienteRepository(context);
-        var result = await repository.GetByIdAsync(clienteBId);
+        await repoA.GetAllAsync();
+        await repoB.GetAllAsync();
 
-        result.Should().BeNull();
+        capturedA[0].Headers.Authorization!.Parameter.Should().Be(tokenA);
+        capturedB[0].Headers.Authorization!.Parameter.Should().Be(tokenB);
     }
+}
 
-    public void Dispose() => _connection.Dispose();
+// ─── Auxiliares de teste ──────────────────────────────────────────────────────
+
+internal sealed class FakeCurrentUserService : ICurrentUserService
+{
+    public Guid AdvogadoId    { get; init; }
+    public string Email       { get; init; } = string.Empty;
+    public string Nome        { get; init; } = string.Empty;
+    public bool IsAuthenticated { get; init; }
+    public string? AccessToken  { get; init; }
+}
+
+internal sealed class MockHttpHandler : HttpMessageHandler
+{
+    private readonly Func<HttpRequestMessage, Task<HttpResponseMessage>> _handler;
+    // Corpo das requisições lidos antes do objeto ser descartado
+    public List<string> RequestBodies { get; } = [];
+
+    public MockHttpHandler(Func<HttpRequestMessage, Task<HttpResponseMessage>> handler)
+        => _handler = handler;
+
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.Content is not null)
+            RequestBodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
+        return await _handler(request);
+    }
 }

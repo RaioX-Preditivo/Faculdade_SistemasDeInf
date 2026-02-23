@@ -30,23 +30,23 @@ public class DomainEntityBuildersTests
             .WithNome("Cliente X")
             .Build();
 
-        cliente.AdvogadoId.Should().Be(advogadoId);
-        cliente.Nome.Should().Be("Cliente X");
+        cliente.IdAdvogado.Should().Be(advogadoId);
+        cliente.NomeCompleto.Should().Be("Cliente X");
     }
 
     [Fact]
     public void ProcessoBuilder_WithAdvogadoAndCliente_BuildAssignsBoth()
     {
         var advogadoId = Guid.NewGuid();
-        var clienteId = Guid.NewGuid();
-        var processo = new ProcessoBuilder()
+        var clienteId  = Guid.NewGuid();
+        var processo   = new ProcessoBuilder()
             .WithAdvogadoId(advogadoId)
             .WithClienteId(clienteId)
             .WithNumeroProcesso("0000000-00.2024.8.26.0100")
             .Build();
 
-        processo.AdvogadoId.Should().Be(advogadoId);
-        processo.ClienteId.Should().Be(clienteId);
-        processo.NumeroProcesso.Should().Contain("2024");
+        processo.IdAdvogado.Should().Be(advogadoId);
+        processo.IdCliente.Should().Be(clienteId);
+        processo.NumProcesso.Should().Contain("2024");
     }
 }
