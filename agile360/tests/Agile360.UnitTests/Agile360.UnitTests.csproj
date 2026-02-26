@@ -20,8 +20,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Agile360.API\Agile360.API.csproj" />
     <ProjectReference Include="..\..\src\Agile360.Application\Agile360.Application.csproj" />
     <ProjectReference Include="..\..\src\Agile360.Domain\Agile360.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Agile360.Infrastructure\Agile360.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Agile360.Shared\Agile360.Shared.csproj" />
   </ItemGroup>
 

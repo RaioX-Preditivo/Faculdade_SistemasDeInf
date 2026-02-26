@@ -1,4 +1,6 @@
 using Agile360.Application.Clientes.DTOs;
+using Agile360.Application.Clientes.Services;
+using Agile360.API.Models;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Interfaces;
 using ClosedXML.Excel;
@@ -10,7 +12,9 @@ namespace Agile360.API.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/clientes")]
-public class ClienteController(IClienteRepository repo) : ControllerBase
+public class ClienteController(
+    IClienteRepository repo,
+    IClienteBulkImportService bulkImportService) : ControllerBase
 {
     // ─── GET /api/clientes ────────────────────────────────────────────────────
     [HttpGet]
@@ -142,95 +146,104 @@ public class ClienteController(IClienteRepository repo) : ControllerBase
 
     /// <summary>
     /// POST /api/clientes/importar   (multipart/form-data, campo: planilha)
-    /// Lê o .xlsx, valida cada linha e insere em lote.
-    /// Retorna resumo com sucesso e erros por linha.
+    /// Responsabilidade do Controller: APENAS parse do Excel → extração de linhas.
+    /// Toda a lógica de negócio (validação, deduplicação, batch insert) fica em
+    /// IClienteBulkImportService — testável de forma independente.
     /// </summary>
     [HttpPost("importar")]
-    [RequestSizeLimit(10 * 1024 * 1024)] // 10 MB
+    [RequestSizeLimit(10 * 1024 * 1024)] // AC-2: máx 10 MB
     public async Task<IActionResult> Importar(
         IFormFile planilha, CancellationToken ct)
     {
+        // ── Validações de infraestrutura (arquivo) ────────────────────────────
         if (planilha is null || planilha.Length == 0)
-            return BadRequest("Nenhum arquivo enviado.");
+            return BadRequest(ApiResponse<object>.Fail("Nenhum arquivo enviado."));
 
         if (!planilha.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
-            return BadRequest("O arquivo deve ser .xlsx.");
-
-        var erros     = new List<ImportarClienteErro>();
-        var para_criar = new List<Cliente>();
+            return BadRequest(ApiResponse<object>.Fail("O arquivo deve ser .xlsx."));
 
         using var stream = planilha.OpenReadStream();
-        using var wb     = new XLWorkbook(stream);
-        var ws           = wb.Worksheet("Clientes");
+        XLWorkbook wb;
+        try { wb = new XLWorkbook(stream); }
+        catch { return BadRequest(ApiResponse<object>.Fail("Arquivo .xlsx inválido ou corrompido.")); }
 
-        if (ws is null)
-            return BadRequest("A planilha não contém a aba 'Clientes'. Use o modelo fornecido.");
-
-        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-
-        for (int row = 2; row <= lastRow; row++)
+        using (wb)
         {
-            var nome = ws.Cell(row, 1).GetString().Trim();
-            if (string.IsNullOrWhiteSpace(nome))
-                continue; // linha vazia — ignora
+            if (!wb.Worksheets.Contains("Clientes"))
+                return BadRequest(ApiResponse<object>.Fail(
+                    "A aba 'Clientes' não foi encontrada. Use o modelo disponível em Passo 1."));
 
-            DateOnly? dataNasc = null;
-            var dataNascStr = ws.Cell(row, 5).GetString().Trim();
-            if (!string.IsNullOrWhiteSpace(dataNascStr))
+            var ws      = wb.Worksheet("Clientes");
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+
+            // AC-2: limite de 500 linhas de dados (linha 1 = cabeçalho)
+            if (lastRow - 1 > ClienteBulkImportService.MaxLinhas)
+                return BadRequest(ApiResponse<object>.Fail(
+                    $"A planilha excede o limite de {ClienteBulkImportService.MaxLinhas} linhas. Divida em partes menores."));
+
+            // ── Extração de linhas (responsabilidade do Controller/API layer) ─
+            var linhas = new List<ImportarClienteRow>();
+            for (int row = 2; row <= lastRow; row++)
             {
-                if (!DateOnly.TryParseExact(dataNascStr, "dd/MM/yyyy",
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.None, out var dn))
-                {
-                    erros.Add(new(row, nome, $"data_nascimento inválida: '{dataNascStr}'. Use dd/mm/aaaa."));
-                    continue;
-                }
-                dataNasc = dn;
+                var nome = ws.Cell(row, 1).GetString().Trim();
+                if (string.IsNullOrWhiteSpace(nome)) continue; // linha vazia — ignora
+
+                linhas.Add(new ImportarClienteRow(
+                    Linha:              row,
+                    NomeCompleto:       nome,
+                    Cpf:                NullIfEmpty(ws.Cell(row,  2).GetString()),
+                    Rg:                 NullIfEmpty(ws.Cell(row,  3).GetString()),
+                    OrgaoExpedidor:     NullIfEmpty(ws.Cell(row,  4).GetString()),
+                    DataNascimentoRaw:  ExtractDateString(ws.Cell(row, 5)),
+                    EstadoCivil:        NullIfEmpty(ws.Cell(row,  6).GetString()),
+                    Profissao:          NullIfEmpty(ws.Cell(row,  7).GetString()),
+                    Telefone:           NullIfEmpty(ws.Cell(row,  8).GetString()),
+                    NumeroConta:        NullIfEmpty(ws.Cell(row,  9).GetString()),
+                    Pix:                NullIfEmpty(ws.Cell(row, 10).GetString()),
+                    Cep:                NullIfEmpty(ws.Cell(row, 11).GetString()),
+                    Endereco:           NullIfEmpty(ws.Cell(row, 12).GetString()),
+                    Numero:             NullIfEmpty(ws.Cell(row, 13).GetString()),
+                    Bairro:             NullIfEmpty(ws.Cell(row, 14).GetString()),
+                    Complemento:        NullIfEmpty(ws.Cell(row, 15).GetString()),
+                    Cidade:             NullIfEmpty(ws.Cell(row, 16).GetString()),
+                    Estado:             NullIfEmpty(ws.Cell(row, 17).GetString())
+                ));
             }
 
-            var estado = ws.Cell(row, 17).GetString().Trim().ToUpperInvariant();
-            if (estado.Length > 2)
-            {
-                erros.Add(new(row, nome, $"estado deve ter no máximo 2 letras (recebido: '{estado}')."));
-                continue;
-            }
+            if (linhas.Count == 0)
+                return BadRequest(ApiResponse<object>.Fail(
+                    "A planilha não contém linhas de dados. Preencha a partir da linha 2."));
 
-            para_criar.Add(new Cliente
-            {
-                NomeCompleto   = nome,
-                Cpf            = NullIfEmpty(ws.Cell(row, 2).GetString()),
-                Rg             = NullIfEmpty(ws.Cell(row, 3).GetString()),
-                OrgaoExpedidor = NullIfEmpty(ws.Cell(row, 4).GetString()),
-                DataNascimento = dataNasc,
-                EstadoCivil    = NullIfEmpty(ws.Cell(row, 6).GetString()),
-                Profissao      = NullIfEmpty(ws.Cell(row, 7).GetString()),
-                Telefone       = NullIfEmpty(ws.Cell(row, 8).GetString()),
-                NumeroConta    = NullIfEmpty(ws.Cell(row, 9).GetString()),
-                Pix            = NullIfEmpty(ws.Cell(row, 10).GetString()),
-                Cep            = NullIfEmpty(ws.Cell(row, 11).GetString()),
-                Endereco       = NullIfEmpty(ws.Cell(row, 12).GetString()),
-                Numero         = NullIfEmpty(ws.Cell(row, 13).GetString()),
-                Bairro         = NullIfEmpty(ws.Cell(row, 14).GetString()),
-                Complemento    = NullIfEmpty(ws.Cell(row, 15).GetString()),
-                Cidade         = NullIfEmpty(ws.Cell(row, 16).GetString()),
-                Estado         = string.IsNullOrWhiteSpace(estado) ? null : estado,
-            });
+            // ── Delega toda a lógica de negócio ao service ────────────────────
+            var resultado = await bulkImportService.ImportarAsync(linhas, ct);
+            return Ok(resultado);
         }
-
-        // Inserir os válidos
-        var inseridos = await repo.AddRangeAsync(para_criar, ct);
-
-        return Ok(new ImportarClientesResult(
-            Total:   para_criar.Count + erros.Count,
-            Sucesso: inseridos.Count,
-            Falhas:  erros.Count,
-            Erros:   erros));
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private static string? NullIfEmpty(string s) =>
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    /// <summary>
+    /// Lê uma célula de data do Excel de forma segura:
+    /// - Se o tipo da célula for DateTime (célula formatada como Data no Excel),
+    ///   converte para string "dd/MM/yyyy".
+    /// - Se for texto, retorna a string como está (para o Service validar).
+    /// - Célula vazia retorna null.
+    /// </summary>
+    private static string? ExtractDateString(IXLCell cell)
+    {
+        if (cell.IsEmpty()) return null;
+
+        // Célula formatada como Data no Excel → ClosedXML armazena como DateTime
+        if (cell.DataType == XLDataType.DateTime)
+            return cell.GetDateTime().ToString("dd/MM/yyyy");
+
+        // Célula com texto digitado (ex: "15/05/1985")
+        var s = cell.GetString().Trim();
+        return string.IsNullOrWhiteSpace(s) ? null : s;
+    }
 
     private static Cliente FromCriar(CriarClienteRequest r) => new()
     {

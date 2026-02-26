@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Button } from '../components/Button';
-import { Input } from '../components/Input';
-import { Modal } from '../components/Modal';
+import { useEffect, useMemo, useState } from 'react';
+import { Button }   from '../components/Button';
+import { Input }    from '../components/Input';
+import { Modal }    from '../components/Modal';
+import { Combobox } from '../components/Combobox';
 import { useToken } from '../context/AuthContext';
 import {
   type Compromisso,
@@ -72,6 +73,15 @@ export function Audiencias() {
 
   const nomeCliente  = (id?: string) => id ? (clientes.find(c => c.id === id)?.nome_completo ?? '—') : '—';
   const numProcesso  = (id?: string) => id ? (processos.find(p => p.id === id)?.num_processo ?? '—') : '—';
+
+  // Opções para Combobox
+  const opcoesClientes = useMemo(() =>
+    clientes.map(c => ({ value: c.id, label: c.nome_completo, sublabel: c.cpf ?? undefined })),
+    [clientes]);
+
+  const opcoesProcessos = useMemo(() =>
+    processos.map(p => ({ value: p.id, label: p.num_processo, sublabel: p.assunto ?? undefined })),
+    [processos]);
 
   // ─── Modal ───────────────────────────────────────────────────────────────
   const abrirCriar = () => {
@@ -239,26 +249,22 @@ export function Audiencias() {
             </div>
 
             {/* Cliente (opcional) */}
-            <div className="flex flex-col gap-1">
-              <label className="text-sm text-[var(--color-text-muted)]">Cliente (opcional)</label>
-              <select value={form.id_cliente ?? ''} onChange={set('id_cliente')}
-                className="min-h-[44px] rounded-[var(--radius)] bg-[var(--color-surface)] border border-[var(--color-border)] px-3 text-[var(--color-text)] focus:border-[var(--color-primary)] focus:outline-none">
-                <option value="">Selecione o cliente…</option>
-                {clientes.map(c => <option key={c.id} value={c.id}>{c.nome_completo}</option>)}
-              </select>
-            </div>
+            <Combobox
+              label="Cliente (opcional)"
+              options={opcoesClientes}
+              value={form.id_cliente ?? ''}
+              onChange={val => setForm(f => ({ ...f, id_cliente: val || undefined }))}
+              placeholder="Busque pelo nome ou CPF…"
+            />
 
-            {/* Processo (obrigatório se audiência) */}
-            <div className="flex flex-col gap-1">
-              <label className="text-sm text-[var(--color-text-muted)]">
-                Processo {form.tipo_compromisso === 'Audiência' ? '*' : '(opcional)'}
-              </label>
-              <select value={form.id_processo ?? ''} onChange={set('id_processo')}
-                className="min-h-[44px] rounded-[var(--radius)] bg-[var(--color-surface)] border border-[var(--color-border)] px-3 text-[var(--color-text)] focus:border-[var(--color-primary)] focus:outline-none">
-                <option value="">Selecione o processo…</option>
-                {processos.map(p => <option key={p.id} value={p.id}>{p.num_processo}</option>)}
-              </select>
-            </div>
+            {/* Processo */}
+            <Combobox
+              label={`Processo ${form.tipo_compromisso === 'Audiência' ? '*' : '(opcional)'}`}
+              options={opcoesProcessos}
+              value={form.id_processo ?? ''}
+              onChange={val => setForm(f => ({ ...f, id_processo: val || undefined }))}
+              placeholder="Busque pelo número do processo…"
+            />
 
             <Input label="Lembrete (minutos antes)" name="lembrete_minutos" type="number" min="0"
               value={form.lembrete_minutos ?? ''} onChange={set('lembrete_minutos')} placeholder="ex.: 60" />
@@ -286,7 +292,7 @@ export function Audiencias() {
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    Agendado:  'bg-blue-500/15 text-blue-400',
+    Agendado:  'bg-orange-500/15 text-orange-400',
     Concluído: 'bg-green-500/15 text-green-400',
     Cancelado: 'bg-red-500/15 text-red-400',
   };

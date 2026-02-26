@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+using Agile360.API.Models;
 using Agile360.Application.Processos.DTOs;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Interfaces;
@@ -11,6 +13,13 @@ namespace Agile360.API.Controllers;
 [Route("api/processos")]
 public class ProcessoController(IProcessoRepository repo) : ControllerBase
 {
+    // Valores aceitos pelo sistema (espelham o schema Supabase)
+    private static readonly string[] StatusValidos =
+        ["Ativo", "Suspenso", "Arquivado", "Encerrado"];
+
+    private static readonly string[] FasesValidas =
+        ["Conhecimento", "Recursal", "Execução"];
+
     // GET /api/processos
     [HttpGet]
     public async Task<IActionResult> Listar(CancellationToken ct)
@@ -31,6 +40,27 @@ public class ProcessoController(IProcessoRepository repo) : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Criar([FromBody] CriarProcessoRequest req, CancellationToken ct)
     {
+        // ── Validações de negócio (SRP: controller valida, repo persiste) ─────
+
+        if (string.IsNullOrWhiteSpace(req.NumProcesso))
+            return BadRequest(ApiResponse<object>.Fail(
+                "O número do processo é obrigatório."));
+
+        if (!StatusValidos.Contains(req.Status))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"Status inválido: '{req.Status}'. Use: {string.Join(", ", StatusValidos)}."));
+
+        if (req.FaseProcessual is not null && !FasesValidas.Contains(req.FaseProcessual))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"Fase processual inválida: '{req.FaseProcessual}'. Use: {string.Join(", ", FasesValidas)}."));
+
+        // Deduplicação antecipada (evita viagem desnecessária ao banco para o caso óbvio)
+        var existente = await repo.GetByNumeroAsync(req.NumProcesso.Trim(), ct);
+        if (existente is not null)
+            return Conflict(ApiResponse<object>.Fail(
+                $"Já existe um processo com o número '{req.NumProcesso}'. " +
+                "Verifique se você já cadastrou este processo."));
+
         var entity = FromCriar(req);
         var criado = await repo.AddAsync(entity, ct);
         return CreatedAtAction(nameof(Obter), new { id = criado.Id }, ToResponse(criado));
@@ -40,6 +70,10 @@ public class ProcessoController(IProcessoRepository repo) : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Atualizar(Guid id, [FromBody] AtualizarProcessoRequest req, CancellationToken ct)
     {
+        if (!StatusValidos.Contains(req.Status))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"Status inválido: '{req.Status}'. Use: {string.Join(", ", StatusValidos)}."));
+
         var existente = await repo.GetByIdAsync(id, ct);
         if (existente is null) return NotFound();
 
@@ -63,18 +97,19 @@ public class ProcessoController(IProcessoRepository repo) : ControllerBase
 
     private static Processo FromCriar(CriarProcessoRequest r) => new()
     {
-        IdCliente          = r.IdCliente,
-        NumProcesso        = r.NumProcesso,
-        Status             = r.Status,
-        ParteContraria     = r.ParteContraria,
-        Tribunal           = r.Tribunal,
-        ComarcaVara        = r.ComarcaVara,
-        Assunto            = r.Assunto,
-        ValorCausa         = r.ValorCausa,
-        HonorariosEstimados= r.HonorariosEstimados,
-        FaseProcessual     = r.FaseProcessual,
-        DataDistribuicao   = r.DataDistribuicao,
-        Observacoes        = r.Observacoes,
+        IdCliente           = r.IdCliente,
+        NumProcesso         = r.NumProcesso.Trim(),
+        Status              = r.Status,
+        ParteContraria      = r.ParteContraria,
+        Tribunal            = r.Tribunal,
+        ComarcaVara         = r.ComarcaVara,
+        Assunto             = r.Assunto,
+        ValorCausa          = r.ValorCausa,
+        HonorariosEstimados = r.HonorariosEstimados,
+        FaseProcessual      = r.FaseProcessual,
+        DataDistribuicao    = r.DataDistribuicao,
+        Observacoes         = r.Observacoes,
+        // CriadoEm é definido em ProcessoRepository.AddAsync (NOT NULL sem DEFAULT)
     };
 
     private static void AplicarAtualizacao(Processo p, AtualizarProcessoRequest r)

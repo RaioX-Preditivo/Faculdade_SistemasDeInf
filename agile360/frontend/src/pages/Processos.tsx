@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Button } from '../components/Button';
-import { Input } from '../components/Input';
-import { Modal } from '../components/Modal';
+import { useEffect, useMemo, useState } from 'react';
+import { Button }   from '../components/Button';
+import { Input }    from '../components/Input';
+import { Modal }    from '../components/Modal';
+import { Combobox } from '../components/Combobox';
 import { useToken } from '../context/AuthContext';
 import {
   type Processo,
@@ -68,6 +69,10 @@ export function Processos() {
 
   const nomeCliente = (id: string) =>
     clientes.find(c => c.id === id)?.nome_completo ?? id.slice(0, 8) + '…';
+
+  const opcoesClientes = useMemo(() =>
+    clientes.map(c => ({ value: c.id, label: c.nome_completo, sublabel: c.cpf ?? undefined })),
+    [clientes]);
 
   // ─── Modal ───────────────────────────────────────────────────────────────
   const abrirCriar = () => {
@@ -185,13 +190,15 @@ export function Processos() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Cliente */}
-            <div className="sm:col-span-2 flex flex-col gap-1">
-              <label className="text-sm text-[var(--color-text-muted)]">Cliente *</label>
-              <select value={form.id_cliente} onChange={set('id_cliente')}
-                className="min-h-[44px] rounded-[var(--radius)] bg-[var(--color-surface)] border border-[var(--color-border)] px-3 text-[var(--color-text)] focus:border-[var(--color-primary)] focus:outline-none">
-                <option value="">Selecione o cliente…</option>
-                {clientes.map(c => <option key={c.id} value={c.id}>{c.nome_completo}</option>)}
-              </select>
+            <div className="sm:col-span-2">
+              <Combobox
+                label="Cliente *"
+                options={opcoesClientes}
+                value={form.id_cliente ?? ''}
+                onChange={val => setForm(f => ({ ...f, id_cliente: val }))}
+                placeholder="Busque pelo nome ou CPF…"
+                error={erroForm === 'Selecione o cliente.' ? erroForm : undefined}
+              />
             </div>
 
             {/* Número */}

@@ -10,6 +10,16 @@ public class CompromissoRepository : Repository<Compromisso>, ICompromissoReposi
     public CompromissoRepository(SupabaseDataClient client, ICurrentUserService currentUser)
         : base(client, currentUser) { }
 
+    /// <summary>
+    /// Override obrigatório: a coluna criado_em é NOT NULL sem DEFAULT no Supabase.
+    /// Sem este override, WhenWritingNull omite o campo do JSON e o banco retorna 23502.
+    /// </summary>
+    public override async Task<Compromisso> AddAsync(Compromisso entity, CancellationToken ct = default)
+    {
+        entity.CriadoEm ??= DateOnly.FromDateTime(DateTime.UtcNow);
+        return await base.AddAsync(entity, ct);
+    }
+
     // GET /rest/v1/compromisso?data=eq.{hoje}&order=hora.asc
     public Task<IReadOnlyList<Compromisso>> GetHojeAsync(CancellationToken ct = default)
     {

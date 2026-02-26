@@ -23,7 +23,7 @@ public class SupabaseDataClient
     ///  • SnakeCaseLower   — colunas Supabase seguem snake_case (id, advogado_id, created_at…)
     ///  • CaseInsensitive  — desserializa independentemente do case retornado
     ///  • JsonStringEnum   — enums armazenados como string (ex.: "Ativo", "Pendente")
-    ///  • IgnoreNull       — não envia campos nulos no corpo do PATCH/POST
+    ///  • WhenWritingNull  — não envia campos nulos no corpo do PATCH/POST individual
     /// </summary>
     internal static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -31,6 +31,32 @@ public class SupabaseDataClient
         PropertyNameCaseInsensitive   = true,
         DefaultIgnoreCondition        = JsonIgnoreCondition.WhenWritingNull,
         Converters                    = { new JsonStringEnumConverter() }
+    };
+
+    /// <summary>
+    /// Opções de JSON exclusivas para Batch Insert no Supabase PostgREST.
+    ///
+    /// Por que é diferente de <see cref="JsonOpts"/>?
+    ///   O PostgREST exige que todos os objetos de um array tenham exatamente
+    ///   as mesmas chaves (PGRST102).  Se usarmos WhenWritingNull, campos
+    ///   nulos são omitidos, fazendo linhas parcialmente preenchidas terem
+    ///   menos chaves que linhas completas → PGRST102.
+    ///
+    ///   Aqui não definimos DefaultIgnoreCondition, portanto campos null
+    ///   aparecem como <c>"campo": null</c> no JSON, mantendo a uniformidade
+    ///   das chaves em todo o array.
+    ///
+    ///   O DTO de entrada (<see cref="ClienteInsertDto"/>) já omite campos
+    ///   gerenciados pelo banco (ex.: data_cadastro) para que o DEFAULT do
+    ///   PostgreSQL seja usado, evitando sobrescrever com null.
+    /// </summary>
+    internal static readonly JsonSerializerOptions JsonOptsBatchInsert = new()
+    {
+        PropertyNamingPolicy        = JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
+        // DefaultIgnoreCondition propositalmente AUSENTE:
+        // nulos → "campo": null no JSON → todas as chaves presentes em todos os objetos
+        Converters                  = { new JsonStringEnumConverter() }
     };
 
     public SupabaseDataClient(HttpClient http, IOptions<SupabaseAuthOptions> options)
@@ -94,6 +120,46 @@ public class SupabaseDataClient
         await EnsureSuccessAsync(res, ct);
         var list = await res.Content.ReadFromJsonAsync<List<T>>(JsonOpts, ct);
         return list is { Count: > 0 } ? list[0] : default;
+    }
+
+    /// <summary>
+    /// POST /rest/v1/{table}   Prefer: return=representation
+    /// Envia um array JSON — 1 requisição HTTP para N registros (Batch Insert).
+    /// Authorization: Bearer &lt;accessToken&gt;
+    /// </summary>
+    public async Task<IReadOnlyList<T>> InsertBatchAsync<T>(
+        string table, IEnumerable<T> entities, string accessToken, CancellationToken ct = default)
+    {
+        using var req = MakeRequest(HttpMethod.Post, table, accessToken);
+        req.Headers.TryAddWithoutValidation("Prefer", "return=representation");
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(entities, JsonOpts), Encoding.UTF8, "application/json");
+        var res = await _http.SendAsync(req, ct);
+        await EnsureSuccessAsync(res, ct);
+        return await res.Content.ReadFromJsonAsync<List<T>>(JsonOpts, ct) ?? [];
+    }
+
+    /// <summary>
+    /// POST /rest/v1/{table}   Prefer: return=representation
+    /// Versão com tipos separados para envio (TIn) e retorno (TOut).
+    ///
+    /// Use quando o DTO de inserção difere da entidade de domínio:
+    ///   • TIn  — DTO fixo (ex.: <see cref="ClienteInsertDto"/>) serializado com
+    ///            <see cref="JsonOptsBatchInsert"/> (sem WhenWritingNull),
+    ///            garantindo que todos os objetos do array tenham as mesmas
+    ///            chaves → evita PGRST102 no PostgREST.
+    ///   • TOut — entidade de domínio (ex.: Cliente) desserializada da resposta.
+    /// </summary>
+    public async Task<IReadOnlyList<TOut>> InsertBatchAsync<TIn, TOut>(
+        string table, IEnumerable<TIn> entities, string accessToken, CancellationToken ct = default)
+    {
+        using var req = MakeRequest(HttpMethod.Post, table, accessToken);
+        req.Headers.TryAddWithoutValidation("Prefer", "return=representation");
+        req.Content = new StringContent(
+            JsonSerializer.Serialize(entities, JsonOptsBatchInsert), Encoding.UTF8, "application/json");
+        var res = await _http.SendAsync(req, ct);
+        await EnsureSuccessAsync(res, ct);
+        return await res.Content.ReadFromJsonAsync<List<TOut>>(JsonOpts, ct) ?? [];
     }
 
     /// <summary>

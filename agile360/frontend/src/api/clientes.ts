@@ -54,9 +54,25 @@ export const clientesApi = {
   excluir: (id: string, token: string) =>
     api.delete(`/api/clientes/${id}`, token),
 
-  /** Baixa o arquivo modelo (.xlsx) para preenchimento */
-  downloadTemplate: () => {
-    window.open('/api/clientes/template', '_blank');
+  /**
+   * Baixa o arquivo modelo (.xlsx) para preenchimento.
+   * Usa fetch com Authorization header (não window.open, que não envia tokens).
+   * O download é disparado programaticamente via Blob URL.
+   */
+  downloadTemplate: async (token: string): Promise<void> => {
+    const res = await fetch('/api/clientes/template', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`Erro ${res.status} ao baixar o modelo.`);
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'modelo_clientes.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
 
   /** Faz upload de planilha .xlsx para importação em massa */

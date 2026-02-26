@@ -21,6 +21,7 @@ public class Repository<T> : IRepository<T> where T : BaseEntity
         [typeof(Cliente)]    = "cliente",
         [typeof(Processo)]   = "processo",
         [typeof(Compromisso)]= "compromisso",
+        [typeof(Prazo)]      = "prazo",
     };
 
     protected virtual string TableName =>
@@ -45,11 +46,16 @@ public class Repository<T> : IRepository<T> where T : BaseEntity
         _client.GetListAsync<T>(TableName, string.Empty, Token, ct);
 
     // POST /rest/v1/{table}    Prefer: return=representation
-    public async Task<T> AddAsync(T entity, CancellationToken ct = default)
+    /// <summary>
+    /// Virtual para permitir overrides nos repositórios concretos.
+    /// Atenção: os campos NOT NULL sem DEFAULT (ex.: criado_em) devem ser
+    /// setados pelo repositório filho antes de chamar base.AddAsync,
+    /// caso contrário o PostgREST devolve 400 com o código 23502.
+    /// </summary>
+    public virtual async Task<T> AddAsync(T entity, CancellationToken ct = default)
     {
         if (entity.Id == Guid.Empty) entity.Id = Guid.NewGuid();
         entity.IdAdvogado = _currentUser.AdvogadoId;
-        // Timestamps (data_cadastro / criado_em) têm DEFAULT now() no Supabase
         return await _client.InsertAsync<T>(TableName, entity, Token, ct) ?? entity;
     }
 

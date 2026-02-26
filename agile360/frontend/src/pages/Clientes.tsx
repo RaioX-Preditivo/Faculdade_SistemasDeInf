@@ -224,6 +224,23 @@ export function Clientes() {
     carregar();
   };
 
+  // ─── Download do modelo ────────────────────────────────────────────────────
+  const [erroDownload, setErroDownload]     = useState<string | null>(null);
+  const [baixandoModelo, setBaixandoModelo] = useState(false);
+
+  const baixarModelo = async () => {
+    if (!token) return;
+    setBaixandoModelo(true);
+    setErroDownload(null);
+    try {
+      await clientesApi.downloadTemplate(token);
+    } catch {
+      setErroDownload('Não foi possível baixar o modelo. Tente novamente.');
+    } finally {
+      setBaixandoModelo(false);
+    }
+  };
+
   // ─── Importar ──────────────────────────────────────────────────────────────
   const abrirImportar = () => {
     setArquivo(null);
@@ -566,10 +583,18 @@ export function Clientes() {
             <p className="text-xs text-[var(--color-text-muted)]">
               O arquivo já vem com as colunas corretas e uma aba de instruções. Não altere o cabeçalho.
             </p>
-            <Button variant="secondary" onClick={clientesApi.downloadTemplate} className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              loading={baixandoModelo}
+              onClick={baixarModelo}
+              className="flex items-center gap-2"
+            >
               <IconDownload />
-              Baixar modelo .xlsx
+              {baixandoModelo ? 'Aguarde…' : 'Baixar modelo .xlsx'}
             </Button>
+            {erroDownload && (
+              <p className="text-xs text-[var(--color-error)]">{erroDownload}</p>
+            )}
           </div>
 
           {/* Passo 2 — Upload */}

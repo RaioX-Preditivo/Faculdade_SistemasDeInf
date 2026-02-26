@@ -58,6 +58,7 @@ public static class DependencyInjection
         services.AddScoped<IClienteRepository,     ClienteRepository>();
         services.AddScoped<IProcessoRepository,    ProcessoRepository>();
         services.AddScoped<ICompromissoRepository, CompromissoRepository>();
+        services.AddScoped<IPrazoRepository,       PrazoRepository>();
 
         // ─── Health Check ────────────────────────────────────────────────────────
         // Verificação básica de liveness; adicione AspNetCore.HealthChecks.Uris

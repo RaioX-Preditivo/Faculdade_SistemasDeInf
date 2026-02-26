@@ -23,18 +23,54 @@ public class ClienteRepository : Repository<Cliente>, IClienteRepository
         return _client.GetListAsync<Cliente>(TableName, filter, Token, ct);
     }
 
-    // POST múltiplos registros de uma vez
+    /// <summary>
+    /// Batch Insert — 1 requisição HTTP ao Supabase PostgREST para N registros.
+    /// POST /rest/v1/cliente  com body [ {...}, {...}, ... ]
+    ///
+    /// Usa <see cref="ClienteInsertDto"/> em vez de <see cref="Cliente"/> diretamente
+    /// para evitar o erro PGRST102 do PostgREST ("All object keys must match"):
+    ///   • <c>WhenWritingNull</c> no JsonOpts global omitiria campos nulos, fazendo
+    ///     objetos de linhas parciais terem menos chaves que os de linhas completas.
+    ///   • O DTO é serializado com <c>JsonOptsBatchInsert</c> (sem WhenWritingNull),
+    ///     garantindo que todos os objetos do array tenham exatamente as mesmas chaves.
+    ///   • <c>data_cadastro</c> é omitido do DTO → banco usa DEFAULT now().
+    /// </summary>
     public async Task<IReadOnlyList<Cliente>> AddRangeAsync(
         IEnumerable<Cliente> clientes, CancellationToken ct = default)
     {
-        var result = new List<Cliente>();
-        foreach (var c in clientes)
+        var lista = clientes.ToList();
+        if (lista.Count == 0) return [];
+
+        // Projeta para ClienteInsertDto: garante todas as chaves presentes + exclui data_cadastro
+        var dtos = lista.Select(c =>
         {
-            c.IdAdvogado = _currentUser.AdvogadoId;
             if (c.Id == Guid.Empty) c.Id = Guid.NewGuid();
-            var inserted = await _client.InsertAsync<Cliente>(TableName, c, Token, ct);
-            if (inserted is not null) result.Add(inserted);
-        }
-        return result;
+            return new ClienteInsertDto(
+                Id:             c.Id,
+                IdAdvogado:     _currentUser.AdvogadoId,
+                TipoCliente:    c.TipoCliente,
+                NomeCompleto:   c.NomeCompleto,
+                Cpf:            c.Cpf,
+                Rg:             c.Rg,
+                OrgaoExpedidor: c.OrgaoExpedidor,
+                DataNascimento: c.DataNascimento,
+                EstadoCivil:    c.EstadoCivil,
+                Profissao:      c.Profissao,
+                Telefone:       c.Telefone,
+                NumeroConta:    c.NumeroConta,
+                Pix:            c.Pix,
+                Cep:            c.Cep,
+                Endereco:       c.Endereco,
+                Numero:         c.Numero,
+                Bairro:         c.Bairro,
+                Complemento:    c.Complemento,
+                Cidade:         c.Cidade,
+                Estado:         c.Estado
+            );
+        }).ToList();
+
+        // TIn = ClienteInsertDto (serializado sem WhenWritingNull → PGRST102 resolvido)
+        // TOut = Cliente         (desserializado da resposta do Supabase)
+        return await _client.InsertBatchAsync<ClienteInsertDto, Cliente>(TableName, dtos, Token, ct);
     }
 }
