@@ -1,3 +1,4 @@
+using Agile360.API.Models;
 using Agile360.Application.Compromissos.DTOs;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Interfaces;
@@ -11,6 +12,9 @@ namespace Agile360.API.Controllers;
 [Route("api/compromissos")]
 public class CompromissoController(ICompromissoRepository repo) : ControllerBase
 {
+    private static readonly string[] TiposValidos =
+        ["Audiência", "Atendimento", "Reunião", "Prazo"];
+
     // GET /api/compromissos
     [HttpGet]
     public async Task<IActionResult> Listar(CancellationToken ct)
@@ -31,6 +35,18 @@ public class CompromissoController(ICompromissoRepository repo) : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Criar([FromBody] CriarCompromissoRequest req, CancellationToken ct)
     {
+        // ── Validações de negócio (SRP: controller valida, repo persiste) ─────
+
+        if (!TiposValidos.Contains(req.TipoCompromisso))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"Tipo de compromisso inválido: '{req.TipoCompromisso}'. " +
+                $"Use: {string.Join(", ", TiposValidos)}."));
+
+        // Audiência obrigatoriamente vinculada a um processo
+        if (req.TipoCompromisso == "Audiência" && req.IdProcesso is null)
+            return BadRequest(ApiResponse<object>.Fail(
+                "Compromissos do tipo 'Audiência' devem estar vinculados a um processo (id_processo obrigatório)."));
+
         var entity = FromCriar(req);
         var criado = await repo.AddAsync(entity, ct);
         return CreatedAtAction(nameof(Obter), new { id = criado.Id }, ToResponse(criado));
@@ -40,6 +56,10 @@ public class CompromissoController(ICompromissoRepository repo) : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Atualizar(Guid id, [FromBody] AtualizarCompromissoRequest req, CancellationToken ct)
     {
+        if (!TiposValidos.Contains(req.TipoCompromisso))
+            return BadRequest(ApiResponse<object>.Fail(
+                $"Tipo de compromisso inválido: '{req.TipoCompromisso}'."));
+
         var existente = await repo.GetByIdAsync(id, ct);
         if (existente is null) return NotFound();
 
@@ -65,12 +85,12 @@ public class CompromissoController(ICompromissoRepository repo) : ControllerBase
     {
         TipoCompromisso = r.TipoCompromisso,
         TipoAudiencia   = r.TipoAudiencia,
-        Status          = r.Status,
+        IsActive        = r.IsActive,
         Data            = r.Data,
         Hora            = r.Hora,
         Local           = r.Local,
-        IdCliente       = r.IdCliente,
-        IdProcesso      = r.IdProcesso,
+        ClienteId       = r.IdCliente,
+        ProcessoId      = r.IdProcesso,
         Observacoes     = r.Observacoes,
         LembreteMinutos = r.LembreteMinutos,
     };
@@ -79,20 +99,20 @@ public class CompromissoController(ICompromissoRepository repo) : ControllerBase
     {
         c.TipoCompromisso = r.TipoCompromisso;
         c.TipoAudiencia   = r.TipoAudiencia;
-        c.Status          = r.Status;
+        if (r.IsActive.HasValue) c.IsActive = r.IsActive.Value;
         c.Data            = r.Data;
         c.Hora            = r.Hora;
         c.Local           = r.Local;
-        c.IdCliente       = r.IdCliente;
-        c.IdProcesso      = r.IdProcesso;
+        c.ClienteId       = r.IdCliente;
+        c.ProcessoId      = r.IdProcesso;
         c.Observacoes     = r.Observacoes;
         c.LembreteMinutos = r.LembreteMinutos;
     }
 
     private static CompromissoResponse ToResponse(Compromisso c) => new(
-        c.Id, c.IdAdvogado,
-        c.TipoCompromisso, c.TipoAudiencia, c.Status,
+        c.Id, c.AdvogadoId,
+        c.TipoCompromisso, c.TipoAudiencia, c.IsActive,
         c.Data, c.Hora, c.Local,
-        c.IdCliente, c.IdProcesso,
-        c.Observacoes, c.LembreteMinutos, c.CriadoEm);
+        c.ClienteId, c.ProcessoId,
+        c.Observacoes, c.LembreteMinutos, c.CreatedAt);
 }

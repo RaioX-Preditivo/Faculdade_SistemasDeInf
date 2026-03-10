@@ -1,4 +1,6 @@
 using Agile360.Application.Clientes.DTOs;
+using Agile360.Application.Clientes.Services;
+using Agile360.API.Models;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Interfaces;
 using ClosedXML.Excel;
@@ -10,7 +12,9 @@ namespace Agile360.API.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/clientes")]
-public class ClienteController(IClienteRepository repo) : ControllerBase
+public class ClienteController(
+    IClienteRepository repo,
+    IClienteBulkImportService bulkImportService) : ControllerBase
 {
     // ─── GET /api/clientes ────────────────────────────────────────────────────
     [HttpGet]
@@ -30,7 +34,7 @@ public class ClienteController(IClienteRepository repo) : ControllerBase
 
     // ─── POST /api/clientes ───────────────────────────────────────────────────
     [HttpPost]
-    public async Task<IActionResult> Criar([FromBody] CriarClienteRequest req, CancellationToken ct)
+    public async Task<IActionResult> Criar([FromBody] CreateClienteRequest req, CancellationToken ct)
     {
         var entity = FromCriar(req);
         var criado = await repo.AddAsync(entity, ct);
@@ -39,7 +43,7 @@ public class ClienteController(IClienteRepository repo) : ControllerBase
 
     // ─── PUT /api/clientes/{id} ───────────────────────────────────────────────
     [HttpPut("{id:guid}")]
-    public async Task<IActionResult> Atualizar(Guid id, [FromBody] AtualizarClienteRequest req, CancellationToken ct)
+    public async Task<IActionResult> Atualizar(Guid id, [FromBody] UpdateClienteRequest req, CancellationToken ct)
     {
         var existente = await repo.GetByIdAsync(id, ct);
         if (existente is null) return NotFound();
@@ -142,89 +146,78 @@ public class ClienteController(IClienteRepository repo) : ControllerBase
 
     /// <summary>
     /// POST /api/clientes/importar   (multipart/form-data, campo: planilha)
-    /// Lê o .xlsx, valida cada linha e insere em lote.
-    /// Retorna resumo com sucesso e erros por linha.
+    /// Responsabilidade do Controller: APENAS parse do Excel → extração de linhas.
+    /// Toda a lógica de negócio (validação, deduplicação, batch insert) fica em
+    /// IClienteBulkImportService — testável de forma independente.
     /// </summary>
     [HttpPost("importar")]
-    [RequestSizeLimit(10 * 1024 * 1024)] // 10 MB
+    [RequestSizeLimit(10 * 1024 * 1024)] // AC-2: máx 10 MB
     public async Task<IActionResult> Importar(
         IFormFile planilha, CancellationToken ct)
     {
+        // ── Validações de infraestrutura (arquivo) ────────────────────────────
         if (planilha is null || planilha.Length == 0)
-            return BadRequest("Nenhum arquivo enviado.");
+            return BadRequest(ApiResponse<object>.Fail("Nenhum arquivo enviado."));
 
         if (!planilha.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
-            return BadRequest("O arquivo deve ser .xlsx.");
-
-        var erros     = new List<ImportarClienteErro>();
-        var para_criar = new List<Cliente>();
+            return BadRequest(ApiResponse<object>.Fail("O arquivo deve ser .xlsx."));
 
         using var stream = planilha.OpenReadStream();
-        using var wb     = new XLWorkbook(stream);
-        var ws           = wb.Worksheet("Clientes");
+        XLWorkbook wb;
+        try { wb = new XLWorkbook(stream); }
+        catch { return BadRequest(ApiResponse<object>.Fail("Arquivo .xlsx inválido ou corrompido.")); }
 
-        if (ws is null)
-            return BadRequest("A planilha não contém a aba 'Clientes'. Use o modelo fornecido.");
-
-        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-
-        for (int row = 2; row <= lastRow; row++)
+        using (wb)
         {
-            var nome = ws.Cell(row, 1).GetString().Trim();
-            if (string.IsNullOrWhiteSpace(nome))
-                continue; // linha vazia — ignora
+            if (!wb.Worksheets.Contains("Clientes"))
+                return BadRequest(ApiResponse<object>.Fail(
+                    "A aba 'Clientes' não foi encontrada. Use o modelo disponível em Passo 1."));
 
-            DateOnly? dataNasc = null;
-            var dataNascStr = ws.Cell(row, 5).GetString().Trim();
-            if (!string.IsNullOrWhiteSpace(dataNascStr))
+            var ws      = wb.Worksheet("Clientes");
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+
+            // AC-2: limite de 500 linhas de dados (linha 1 = cabeçalho)
+            if (lastRow - 1 > ClienteBulkImportService.MaxLinhas)
+                return BadRequest(ApiResponse<object>.Fail(
+                    $"A planilha excede o limite de {ClienteBulkImportService.MaxLinhas} linhas. Divida em partes menores."));
+
+            // ── Extração de linhas (responsabilidade do Controller/API layer) ─
+            var linhas = new List<ImportarClienteRow>();
+            for (int row = 2; row <= lastRow; row++)
             {
-                if (!DateOnly.TryParseExact(dataNascStr, "dd/MM/yyyy",
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.None, out var dn))
-                {
-                    erros.Add(new(row, nome, $"data_nascimento inválida: '{dataNascStr}'. Use dd/mm/aaaa."));
-                    continue;
-                }
-                dataNasc = dn;
+                var nome = ws.Cell(row, 1).GetString().Trim();
+                if (string.IsNullOrWhiteSpace(nome)) continue; // linha vazia — ignora
+
+                linhas.Add(new ImportarClienteRow(
+                    Linha:              row,
+                    NomeCompleto:       nome,
+                    Cpf:                NullIfEmpty(ws.Cell(row,  2).GetString()),
+                    Rg:                 NullIfEmpty(ws.Cell(row,  3).GetString()),
+                    OrgaoExpedidor:     NullIfEmpty(ws.Cell(row,  4).GetString()),
+                    DataNascimentoRaw:  ExtractDateString(ws.Cell(row, 5)),
+                    EstadoCivil:        NullIfEmpty(ws.Cell(row,  6).GetString()),
+                    Profissao:          NullIfEmpty(ws.Cell(row,  7).GetString()),
+                    Telefone:           NullIfEmpty(ws.Cell(row,  8).GetString()),
+                    NumeroConta:        NullIfEmpty(ws.Cell(row,  9).GetString()),
+                    Pix:                NullIfEmpty(ws.Cell(row, 10).GetString()),
+                    Cep:                NullIfEmpty(ws.Cell(row, 11).GetString()),
+                    Endereco:           NullIfEmpty(ws.Cell(row, 12).GetString()),
+                    Numero:             NullIfEmpty(ws.Cell(row, 13).GetString()),
+                    Bairro:             NullIfEmpty(ws.Cell(row, 14).GetString()),
+                    Complemento:        NullIfEmpty(ws.Cell(row, 15).GetString()),
+                    Cidade:             NullIfEmpty(ws.Cell(row, 16).GetString()),
+                    Estado:             NullIfEmpty(ws.Cell(row, 17).GetString())
+                ));
             }
 
-            var estado = ws.Cell(row, 17).GetString().Trim().ToUpperInvariant();
-            if (estado.Length > 2)
-            {
-                erros.Add(new(row, nome, $"estado deve ter no máximo 2 letras (recebido: '{estado}')."));
-                continue;
-            }
+            if (linhas.Count == 0)
+                return BadRequest(ApiResponse<object>.Fail(
+                    "A planilha não contém linhas de dados. Preencha a partir da linha 2."));
 
-            para_criar.Add(new Cliente
-            {
-                NomeCompleto   = nome,
-                Cpf            = NullIfEmpty(ws.Cell(row, 2).GetString()),
-                Rg             = NullIfEmpty(ws.Cell(row, 3).GetString()),
-                OrgaoExpedidor = NullIfEmpty(ws.Cell(row, 4).GetString()),
-                DataNascimento = dataNasc,
-                EstadoCivil    = NullIfEmpty(ws.Cell(row, 6).GetString()),
-                Profissao      = NullIfEmpty(ws.Cell(row, 7).GetString()),
-                Telefone       = NullIfEmpty(ws.Cell(row, 8).GetString()),
-                NumeroConta    = NullIfEmpty(ws.Cell(row, 9).GetString()),
-                Pix            = NullIfEmpty(ws.Cell(row, 10).GetString()),
-                Cep            = NullIfEmpty(ws.Cell(row, 11).GetString()),
-                Endereco       = NullIfEmpty(ws.Cell(row, 12).GetString()),
-                Numero         = NullIfEmpty(ws.Cell(row, 13).GetString()),
-                Bairro         = NullIfEmpty(ws.Cell(row, 14).GetString()),
-                Complemento    = NullIfEmpty(ws.Cell(row, 15).GetString()),
-                Cidade         = NullIfEmpty(ws.Cell(row, 16).GetString()),
-                Estado         = string.IsNullOrWhiteSpace(estado) ? null : estado,
-            });
+            // ── Delega toda a lógica de negócio ao service ────────────────────
+            var resultado = await bulkImportService.ImportarAsync(linhas, ct);
+            return Ok(resultado);
         }
-
-        // Inserir os válidos
-        var inseridos = await repo.AddRangeAsync(para_criar, ct);
-
-        return Ok(new ImportarClientesResult(
-            Total:   para_criar.Count + erros.Count,
-            Sucesso: inseridos.Count,
-            Falhas:  erros.Count,
-            Erros:   erros));
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -232,55 +225,103 @@ public class ClienteController(IClienteRepository repo) : ControllerBase
     private static string? NullIfEmpty(string s) =>
         string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
-    private static Cliente FromCriar(CriarClienteRequest r) => new()
+    /// <summary>
+    /// Lê uma célula de data do Excel de forma segura:
+    /// - Se o tipo da célula for DateTime (célula formatada como Data no Excel),
+    ///   converte para string "dd/MM/yyyy".
+    /// - Se for texto, retorna a string como está (para o Service validar).
+    /// - Célula vazia retorna null.
+    /// </summary>
+    private static string? ExtractDateString(IXLCell cell)
     {
-        TipoCliente    = r.TipoCliente,
-        NomeCompleto   = r.NomeCompleto,
-        Cpf            = r.Cpf,
-        Rg             = r.Rg,
-        OrgaoExpedidor = r.OrgaoExpedidor,
-        DataNascimento = r.DataNascimento,
-        EstadoCivil    = r.EstadoCivil,
-        Profissao      = r.Profissao,
-        Telefone       = r.Telefone,
-        NumeroConta    = r.NumeroConta,
-        Pix            = r.Pix,
-        Cep            = r.Cep,
-        Endereco       = r.Endereco,
-        Numero         = r.Numero,
-        Bairro         = r.Bairro,
-        Complemento    = r.Complemento,
-        Cidade         = r.Cidade,
-        Estado         = r.Estado,
+        if (cell.IsEmpty()) return null;
+
+        // Célula formatada como Data no Excel → ClosedXML armazena como DateTime
+        if (cell.DataType == XLDataType.DateTime)
+            return cell.GetDateTime().ToString("dd/MM/yyyy");
+
+        // Célula com texto digitado (ex: "15/05/1985")
+        var s = cell.GetString().Trim();
+        return string.IsNullOrWhiteSpace(s) ? null : s;
+    }
+
+    private static Cliente FromCriar(CreateClienteRequest r) => new()
+    {
+        TipoCliente       = r.TipoCliente,
+        NomeCompleto      = r.NomeCompleto,
+        CPF               = r.CPF,
+        RG                = r.RG,
+        OrgaoExpedidor    = r.OrgaoExpedidor,
+        RazaoSocial       = r.RazaoSocial,
+        CNPJ              = r.CNPJ,
+        InscricaoEstadual = r.InscricaoEstadual,
+        Telefone          = r.Telefone,
+        CEP               = r.CEP,
+        Estado            = r.Estado,
+        Cidade            = r.Cidade,
+        Endereco          = r.Endereco,
+        Numero            = r.Numero,
+        Bairro            = r.Bairro,
+        Complemento       = r.Complemento,
+        DataReferencia    = r.DataReferencia,
+        EstadoCivil       = r.EstadoCivil,
+        AreaAtuacao       = r.AreaAtuacao,
+        NumeroConta       = r.NumeroConta,
+        Pix               = r.Pix,
+        Observacoes       = r.Observacoes,
     };
 
-    private static void AplicarAtualizacao(Cliente c, AtualizarClienteRequest r)
+    private static void AplicarAtualizacao(Cliente c, UpdateClienteRequest r)
     {
-        c.TipoCliente    = r.TipoCliente;
-        c.NomeCompleto   = r.NomeCompleto;
-        c.Cpf            = r.Cpf;
-        c.Rg             = r.Rg;
-        c.OrgaoExpedidor = r.OrgaoExpedidor;
-        c.DataNascimento = r.DataNascimento;
-        c.EstadoCivil    = r.EstadoCivil;
-        c.Profissao      = r.Profissao;
-        c.Telefone       = r.Telefone;
-        c.NumeroConta    = r.NumeroConta;
-        c.Pix            = r.Pix;
-        c.Cep            = r.Cep;
-        c.Endereco       = r.Endereco;
-        c.Numero         = r.Numero;
-        c.Bairro         = r.Bairro;
-        c.Complemento    = r.Complemento;
-        c.Cidade         = r.Cidade;
-        c.Estado         = r.Estado;
+        if (r.TipoCliente       != null) c.TipoCliente       = r.TipoCliente;
+        if (r.NomeCompleto      != null) c.NomeCompleto      = r.NomeCompleto;
+        if (r.CPF               != null) c.CPF               = r.CPF;
+        if (r.RG                != null) c.RG                = r.RG;
+        if (r.OrgaoExpedidor    != null) c.OrgaoExpedidor    = r.OrgaoExpedidor;
+        if (r.RazaoSocial       != null) c.RazaoSocial       = r.RazaoSocial;
+        if (r.CNPJ              != null) c.CNPJ              = r.CNPJ;
+        if (r.InscricaoEstadual != null) c.InscricaoEstadual = r.InscricaoEstadual;
+        if (r.Telefone          != null) c.Telefone          = r.Telefone;
+        if (r.CEP               != null) c.CEP               = r.CEP;
+        if (r.Estado            != null) c.Estado            = r.Estado;
+        if (r.Cidade            != null) c.Cidade            = r.Cidade;
+        if (r.Endereco          != null) c.Endereco          = r.Endereco;
+        if (r.Numero            != null) c.Numero            = r.Numero;
+        if (r.Bairro            != null) c.Bairro            = r.Bairro;
+        if (r.Complemento       != null) c.Complemento       = r.Complemento;
+        if (r.DataReferencia.HasValue)   c.DataReferencia    = r.DataReferencia;
+        if (r.EstadoCivil       != null) c.EstadoCivil       = r.EstadoCivil;
+        if (r.AreaAtuacao       != null) c.AreaAtuacao       = r.AreaAtuacao;
+        if (r.NumeroConta       != null) c.NumeroConta       = r.NumeroConta;
+        if (r.Pix               != null) c.Pix               = r.Pix;
+        if (r.IsActive.HasValue) c.IsActive = r.IsActive.Value;
+        if (r.Observacoes       != null) c.Observacoes       = r.Observacoes;
     }
 
     private static ClienteResponse ToResponse(Cliente c) => new(
-        c.Id, c.IdAdvogado,
-        c.TipoCliente, c.NomeCompleto, c.Cpf, c.Rg, c.OrgaoExpedidor,
-        c.DataNascimento, c.EstadoCivil, c.Profissao,
-        c.Telefone, c.NumeroConta, c.Pix,
-        c.Cep, c.Endereco, c.Numero, c.Bairro, c.Complemento,
-        c.Cidade, c.Estado, c.DataCadastro);
+        Id:               c.Id,
+        TipoCliente:      c.TipoCliente,
+        NomeCompleto:     c.NomeCompleto,
+        CPF:              c.CPF,
+        RG:               c.RG,
+        OrgaoExpedidor:   c.OrgaoExpedidor,
+        RazaoSocial:      c.RazaoSocial,
+        CNPJ:             c.CNPJ,
+        InscricaoEstadual: c.InscricaoEstadual,
+        Telefone:         c.Telefone,
+        CEP:              c.CEP,
+        Estado:           c.Estado,
+        Cidade:           c.Cidade,
+        Endereco:         c.Endereco,
+        Numero:           c.Numero,
+        Bairro:           c.Bairro,
+        Complemento:      c.Complemento,
+        DataReferencia:   c.DataReferencia,
+        EstadoCivil:      c.EstadoCivil,
+        AreaAtuacao:      c.AreaAtuacao,
+        NumeroConta:      c.NumeroConta,
+        Pix:              c.Pix,
+        IsActive:         c.IsActive,
+        Observacoes:      c.Observacoes,
+        DataCadastro:     c.DataCadastro);
 }

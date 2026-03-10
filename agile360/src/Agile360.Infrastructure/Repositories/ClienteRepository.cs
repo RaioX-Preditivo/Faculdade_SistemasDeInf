@@ -1,40 +1,40 @@
-using Agile360.Application.Interfaces;
 using Agile360.Domain.Entities;
 using Agile360.Domain.Interfaces;
 using Agile360.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace Agile360.Infrastructure.Repositories;
 
 public class ClienteRepository : Repository<Cliente>, IClienteRepository
 {
-    public ClienteRepository(SupabaseDataClient client, ICurrentUserService currentUser)
-        : base(client, currentUser) { }
+    public ClienteRepository(Agile360DbContext context) : base(context) { }
 
-    // GET /rest/v1/cliente?cpf=eq.{cpf}&limit=1
-    public Task<Cliente?> GetByCpfAsync(string cpf, CancellationToken ct = default) =>
-        _client.GetSingleAsync<Cliente>(TableName,
-            $"cpf=eq.{Uri.EscapeDataString(cpf)}", Token, ct);
+    public async Task<Cliente?> GetByCpfAsync(string cpf, CancellationToken ct = default) =>
+        await _dbSet.FirstOrDefaultAsync(c => c.CPF == cpf, ct);
 
-    // GET /rest/v1/cliente?or=(nome_completo.ilike.*t*,cpf.ilike.*t*,telefone.ilike.*t*)
-    public Task<IReadOnlyList<Cliente>> SearchAsync(string termo, CancellationToken ct = default)
+    public async Task<IReadOnlyList<Cliente>> SearchAsync(string termo, CancellationToken ct = default)
     {
-        var t      = Uri.EscapeDataString($"*{termo}*");
-        var filter = $"or=(nome_completo.ilike.{t},cpf.ilike.{t},telefone.ilike.{t})";
-        return _client.GetListAsync<Cliente>(TableName, filter, Token, ct);
+        var lower = termo.ToLower();
+        return await _dbSet
+            .Where(c => (c.NomeCompleto != null && c.NomeCompleto.ToLower().Contains(lower))
+                     || (c.RazaoSocial  != null && c.RazaoSocial.ToLower().Contains(lower))
+                     || (c.CPF          != null && c.CPF.Contains(lower))
+                     || (c.Telefone     != null && c.Telefone.Contains(lower)))
+            .AsNoTracking()
+            .ToListAsync(ct);
     }
 
-    // POST múltiplos registros de uma vez
     public async Task<IReadOnlyList<Cliente>> AddRangeAsync(
         IEnumerable<Cliente> clientes, CancellationToken ct = default)
     {
-        var result = new List<Cliente>();
-        foreach (var c in clientes)
-        {
-            c.IdAdvogado = _currentUser.AdvogadoId;
+        var lista = clientes.ToList();
+        if (lista.Count == 0) return [];
+
+        foreach (var c in lista)
             if (c.Id == Guid.Empty) c.Id = Guid.NewGuid();
-            var inserted = await _client.InsertAsync<Cliente>(TableName, c, Token, ct);
-            if (inserted is not null) result.Add(inserted);
-        }
-        return result;
+
+        await _dbSet.AddRangeAsync(lista, ct);
+        await _context.SaveChangesAsync(ct);
+        return lista;
     }
 }

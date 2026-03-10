@@ -32,12 +32,16 @@ async function request<T>(
   const json = await res.json().catch(() => ({}));
 
   if (!res.ok) {
+    // json pode ser: { error: { message } }  →  padrão ApiResponse
+    //               "string pura"             →  BadRequest("texto") sem wrapper
+    //               {}                        →  fallback para statusText
+    const message =
+      (typeof json === 'string' ? json : json?.error?.message) ||
+      res.statusText ||
+      'Erro na requisição';
     return {
       success: false,
-      error: {
-        message: json?.error?.message || res.statusText || 'Erro na requisição',
-        statusCode: res.status,
-      },
+      error: { message, statusCode: res.status },
     };
   }
   return { success: true, data: json.data ?? json };
@@ -59,6 +63,10 @@ export const api = {
   async delete<T = void>(path: string, token?: string) {
     return request<T>(path, { method: 'DELETE', token });
   },
+  /** DELETE com body JSON — usado por endpoints como DELETE /api/auth/mfa/disable. */
+  async deleteWithBody<T = void>(path: string, body: unknown, token?: string) {
+    return request<T>(path, { method: 'DELETE', body: JSON.stringify(body), token });
+  },
   /** Multipart/form-data — para upload de arquivos */
   async postForm<T>(path: string, form: FormData, token?: string) {
     const headers: HeadersInit = {};
@@ -72,8 +80,13 @@ export const api = {
       return { success: false, error: { message: 'Sessão expirada. Faça login novamente.', statusCode: 401 } } as ApiResponse<T>;
     }
     const json = await res.json().catch(() => ({}));
-    if (!res.ok)
-      return { success: false, error: { message: json?.error?.message || res.statusText, statusCode: res.status } } as ApiResponse<T>;
+    if (!res.ok) {
+      const message =
+        (typeof json === 'string' ? json : json?.error?.message) ||
+        res.statusText ||
+        'Erro na requisição';
+      return { success: false, error: { message, statusCode: res.status } } as ApiResponse<T>;
+    }
     return { success: true, data: json.data ?? json } as ApiResponse<T>;
   },
 };
