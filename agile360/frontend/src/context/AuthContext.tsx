@@ -9,6 +9,7 @@ import {
 } from 'react';
 import * as authApi from '../api/auth';
 import type { Profile } from '../api/auth';
+import { isMfaRequired } from '../api/auth';
 import { mfaChallenge, mfaChallengeWithRecovery } from '../api/mfa';
 
 const TOKEN_KEY = 'agile360_token';
@@ -28,9 +29,15 @@ const defaultState: AuthState = {
   loading: true,
 };
 
+/** Resultado de login: sucesso normal, desafio MFA ou erro */
+export type LoginCallbackResult =
+  | { ok: true; mfaRequired?: false; error?: never }
+  | { ok: true; mfaRequired: true; mfaTempToken: string }
+  | { ok: false; error: string };
+
 const AuthContext = createContext<{
   state: AuthState;
-  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<LoginCallbackResult>;
   register: (payload: Parameters<typeof authApi.register>[0]) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
   setTokens: (access: string, refresh: string) => void;
@@ -73,12 +80,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadUser]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string): Promise<LoginCallbackResult> => {
       const res = await authApi.login(email, password);
       if (!res.success) {
         return { ok: false, error: res.error?.message ?? 'E-mail ou senha inválidos.' };
       }
+
       const d = res.data!;
+
+      // ── MFA Gate: backend retornou 202 com temp token ────────────────────────
+      // O frontend redireciona para /mfa-challenge sem salvar nenhum token.
+      if (isMfaRequired(d)) {
+        return { ok: true, mfaRequired: true, mfaTempToken: d.mfa_temp_token };
+      }
+
+      // ── Login normal: salva tokens e carrega perfil ───────────────────────────
       setTokens(d.access_token, d.refresh_token ?? '');
       if (d.advogado) setState((s) => ({ ...s, user: d.advogado as unknown as Profile }));
       else await loadUser(d.access_token);

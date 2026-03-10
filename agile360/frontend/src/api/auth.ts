@@ -8,6 +8,20 @@ export interface AuthResponse {
 }
 
 /**
+ * Retornado pelo backend com status 202 quando o advogado tem MFA ativo.
+ * O frontend deve redirecionar para /mfa-challenge com este token temporário.
+ */
+export interface MfaRequiredResponse {
+  mfa_temp_token: string;
+  expires_in_seconds: number;
+}
+
+/** Type guard: discrimina entre resposta completa (200) e desafio MFA (202). */
+export function isMfaRequired(d: AuthResponse | MfaRequiredResponse): d is MfaRequiredResponse {
+  return 'mfa_temp_token' in d;
+}
+
+/**
  * Resposta retornada pelo endpoint POST /api/auth/mfa/challenge.
  * O refreshToken é enviado via HttpOnly cookie — não aparece neste objeto.
  */
@@ -25,8 +39,11 @@ export interface Profile {
   telefone?: string;
 }
 
-export async function login(email: string, password: string): Promise<ApiResponse<AuthResponse>> {
-  return api.post<AuthResponse>('/api/auth/login', { email, password });
+export async function login(
+  email: string,
+  password: string
+): Promise<ApiResponse<AuthResponse | MfaRequiredResponse>> {
+  return api.post<AuthResponse | MfaRequiredResponse>('/api/auth/login', { email, password });
 }
 
 export async function register(payload: {

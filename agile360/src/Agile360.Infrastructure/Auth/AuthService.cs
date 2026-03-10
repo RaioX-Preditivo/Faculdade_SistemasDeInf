@@ -67,7 +67,7 @@ public class AuthService : IAuthService
 
     // ─── Login ───────────────────────────────────────────────────────────────────
 
-    public async Task<AuthResult> LoginAsync(LoginRequest request, CancellationToken ct = default)
+    public async Task<LoginResult> LoginAsync(LoginRequest request, CancellationToken ct = default)
     {
         var sw = Stopwatch.StartNew();
         _logger.LogInformation("[Login] Iniciando autenticação para {Email}", request.Email);
@@ -81,38 +81,61 @@ public class AuthService : IAuthService
         catch (Exception ex)
         {
             _logger.LogError(ex, "[Login] Falha ao chamar Supabase Auth ({Elapsed}ms)", sw.ElapsedMilliseconds);
-            return AuthResult.Fail("Não foi possível conectar ao servidor de autenticação. Tente novamente.");
+            return LoginResult.Fail("Não foi possível conectar ao servidor de autenticação. Tente novamente.");
         }
 
         _logger.LogInformation("[Login] Supabase Auth respondeu em {Elapsed}ms — sucesso: {Ok}",
             sw.ElapsedMilliseconds, res?.AccessToken != null);
 
         if (res?.AccessToken == null)
-            return AuthResult.Fail("E-mail ou senha inválidos.");
+            return LoginResult.Fail("E-mail ou senha inválidos.");
 
         Guid advogadoId = Guid.TryParse(res.User?.Id, out var id) ? id : Guid.Empty;
 
-        // Passo 2 — GET /rest/v1/advogado (Supabase Data API)
+        // Passo 2 — GET /rest/v1/advogado (entidade completa — usada para MFA check E perfil)
         sw.Restart();
-        AdvogadoProfileResponse? profile;
+        Advogado? adv = null;
         try
         {
-            profile = await GetProfileByIdAsync(advogadoId, res.AccessToken, ct);
+            adv = await _dataClient.GetSingleAsync<Advogado>(AdvogadosTable, $"id=eq.{advogadoId}", res.AccessToken, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[Login] Falha ao buscar perfil do advogado {AdvogadoId} ({Elapsed}ms)",
+            _logger.LogError(ex, "[Login] Falha ao buscar entidade do advogado {AdvogadoId} ({Elapsed}ms)",
                 advogadoId, sw.ElapsedMilliseconds);
-            // Login teve sucesso mas perfil falhou — retorna sem perfil em vez de bloquear
-            var expiresAtFallback = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
-            return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAtFallback, null!));
         }
 
-        _logger.LogInformation("[Login] Perfil carregado em {Elapsed}ms — AdvogadoId: {AdvogadoId}",
-            sw.ElapsedMilliseconds, advogadoId);
+        _logger.LogInformation("[Login] Entidade carregada em {Elapsed}ms — AdvogadoId: {AdvogadoId} | MfaEnabled: {Mfa}",
+            sw.ElapsedMilliseconds, advogadoId, adv?.MfaEnabled);
+
+        // ── MFA Gate ──────────────────────────────────────────────────────────────
+        // Se o advogado tem 2FA ativo, NÃO emite o JWT final.
+        // Retorna apenas um token temporário para o frontend redirecionar
+        // para a tela de desafio MFA (POST /api/auth/mfa/challenge).
+        if (adv?.MfaEnabled == true)
+        {
+            _logger.LogInformation("[Login] MFA ativo para {AdvogadoId} — emitindo desafio (202)", advogadoId);
+            return LoginResult.MfaChallenge(new MfaRequiredResponse(res.AccessToken));
+        }
+
+        // ── Sem MFA: emite tokens completos ───────────────────────────────────────
+        var profile = adv == null ? null : new AdvogadoProfileResponse(
+            Id:               adv.Id,
+            Nome:             adv.Nome,
+            Email:            adv.Email,
+            Role:             adv.Role,
+            OAB:              adv.OAB,
+            NomeEscritorio:   adv.NomeEscritorio,
+            Plano:            adv.Plano,
+            StatusAssinatura: adv.StatusAssinatura,
+            FotoUrl:          adv.FotoUrl,
+            Telefone:         adv.Telefone,
+            Cidade:           adv.Cidade,
+            Estado:           adv.Estado,
+            DataExpiracao:    adv.DataExpiracao);
 
         var expiresAt = DateTimeOffset.UtcNow.AddSeconds(res.ExpiresIn);
-        return AuthResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
+        return LoginResult.Ok(new AuthResponse(res.AccessToken, res.RefreshToken ?? "", expiresAt, profile!));
     }
 
     // ─── Refresh ─────────────────────────────────────────────────────────────────

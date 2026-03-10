@@ -5,7 +5,13 @@ namespace Agile360.Application.Interfaces;
 public interface IAuthService
 {
     Task<AuthResult> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken = default);
-    Task<AuthResult> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Autentica o advogado. Retorna <see cref="LoginResult"/> que pode ser:
+    ///   - <see cref="LoginResult.Ok"/>           → tokens completos (MFA desabilitado)
+    ///   - <see cref="LoginResult.MfaChallenge"/> → 202 + MfaTempToken (MFA ativo)
+    ///   - <see cref="LoginResult.Fail"/>          → credenciais inválidas
+    /// </summary>
+    Task<LoginResult> LoginAsync(LoginRequest request, CancellationToken cancellationToken = default);
     Task<AuthResult?> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default);
     Task LogoutAsync(string accessToken, CancellationToken cancellationToken = default);
     Task ForgotPasswordAsync(string email, CancellationToken cancellationToken = default);

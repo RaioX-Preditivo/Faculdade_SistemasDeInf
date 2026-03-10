@@ -24,12 +24,25 @@ export function Login() {
         const result = await login(email, password);
 
         setLoading(false);
-        if (result.ok) {
-            navigate(returnUrl, { replace: true });
-        }
-        else {
+
+        if (!result.ok) {
             setError(result.error ?? 'E-mail ou senha inválidos.');
+            return;
         }
+
+        // ── MFA ativo: redireciona para tela de desafio ────────────────────────
+        // O token temporário (mfaTempToken) é passado via router state para
+        // MfaChallenge.tsx, que o usa para validar o código TOTP.
+        if (result.mfaRequired) {
+            navigate('/mfa-challenge', {
+                replace: true,
+                state: { mfaTempToken: result.mfaTempToken, returnUrl },
+            });
+            return;
+        }
+
+        // ── Login normal: vai para o destino original ──────────────────────────
+        navigate(returnUrl, { replace: true });
     }
 
     return (
