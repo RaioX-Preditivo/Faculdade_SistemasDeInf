@@ -82,15 +82,17 @@ COMMIT;
 -- ════════════════════════════════════════════════════════════
 
 -- 1. Confirma que RLS está habilitado nas duas tabelas:
+--    (rowsecurity = RLS ativo; relforcerowsecurity vem de pg_class)
 SELECT
-    schemaname,
-    tablename,
-    rowsecurity   AS rls_enabled,
-    forcerowsecurity AS rls_forced
-FROM pg_tables
-WHERE schemaname = 'public'
-  AND tablename IN ('advogado_recovery_codes', '__EFMigrationsHistory')
-ORDER BY tablename;
+    t.schemaname,
+    t.tablename,
+    t.rowsecurity             AS rls_enabled,
+    c.relforcerowsecurity     AS rls_forced
+FROM pg_tables t
+JOIN pg_class  c ON c.relname = t.tablename
+WHERE t.schemaname = 'public'
+  AND t.tablename IN ('advogado_recovery_codes', '__EFMigrationsHistory')
+ORDER BY t.tablename;
 -- Resultado esperado:
 --  public | __EFMigrationsHistory    | true | false
 --  public | advogado_recovery_codes  | true | false
