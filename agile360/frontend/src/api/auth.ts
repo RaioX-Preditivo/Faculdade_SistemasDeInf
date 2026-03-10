@@ -24,11 +24,16 @@ export function isMfaRequired(d: AuthResponse | MfaRequiredResponse): d is MfaRe
 /**
  * Resposta retornada pelo endpoint POST /api/auth/mfa/challenge.
  * O refreshToken é enviado via HttpOnly cookie — não aparece neste objeto.
+ *
+ * ATENÇÃO: campos em snake_case — o backend usa JsonNamingPolicy.SnakeCaseLower.
+ *   AccessToken       → access_token
+ *   ExpiresInSeconds  → expires_in_seconds
+ *   FotoUrl           → foto_url
  */
 export interface SecureAuthResponse {
-  accessToken: string;
-  expiresInSeconds: number;
-  advogado?: { id: string; nome: string; email: string; oab?: string; fotoUrl?: string };
+  access_token: string;
+  expires_in_seconds: number;
+  advogado?: { id: string; nome: string; email: string; oab?: string; foto_url?: string };
 }
 
 export interface Profile {

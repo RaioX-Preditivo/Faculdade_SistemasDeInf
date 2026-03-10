@@ -135,16 +135,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: res.error?.message ?? 'Código inválido.' };
       }
       const d = res.data!;
-      // Refresh token está no HttpOnly cookie — não precisa guardar no localStorage
-      setTokens(d.accessToken, '');
+      // Refresh token está no HttpOnly cookie — não precisa guardar no localStorage.
+      // ATENÇÃO: backend usa snake_case → d.access_token (não d.accessToken).
+      setTokens(d.access_token, '');
       if (d.advogado) {
         setState((s) => ({
           ...s,
-          user: { id: d.advogado!.id, nome: d.advogado!.nome, email: d.advogado!.email, oab: d.advogado!.oab ?? '' },
+          user: {
+            id:       d.advogado!.id,
+            nome:     d.advogado!.nome,
+            email:    d.advogado!.email,
+            oab:      d.advogado!.oab ?? '',
+          },
           loading: false,
         }));
       } else {
-        await loadUser(d.accessToken);
+        await loadUser(d.access_token);
       }
       return { ok: true };
     },
@@ -162,15 +168,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: res.error?.message ?? 'Código de recuperação inválido ou já utilizado.' };
       }
       const d = res.data!;
-      setTokens(d.accessToken, '');
+      // ATENÇÃO: backend usa snake_case → d.access_token (não d.accessToken).
+      setTokens(d.access_token, '');
       if (d.advogado) {
         setState((s) => ({
           ...s,
-          user: { id: d.advogado!.id, nome: d.advogado!.nome, email: d.advogado!.email, oab: d.advogado!.oab ?? '' },
+          user: {
+            id:       d.advogado!.id,
+            nome:     d.advogado!.nome,
+            email:    d.advogado!.email,
+            oab:      d.advogado!.oab ?? '',
+          },
           loading: false,
         }));
       } else {
-        await loadUser(d.accessToken);
+        await loadUser(d.access_token);
       }
       return { ok: true };
     },
