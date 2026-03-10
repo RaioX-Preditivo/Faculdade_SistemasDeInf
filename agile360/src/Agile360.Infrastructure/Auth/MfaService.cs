@@ -3,6 +3,7 @@ using Agile360.Application.Interfaces;
 using Agile360.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using OtpNet;
 using System.Security.Cryptography;
 using System.Text;
@@ -29,11 +30,17 @@ public class MfaService : IMfaService
     private readonly Agile360DbContext _db;
     private readonly byte[] _encKey;
     private readonly IRecoveryCodeService _recoveryCodes;
+    private readonly ILogger<MfaService> _logger;
 
-    public MfaService(Agile360DbContext db, IConfiguration configuration, IRecoveryCodeService recoveryCodes)
+    public MfaService(
+        Agile360DbContext db,
+        IConfiguration configuration,
+        IRecoveryCodeService recoveryCodes,
+        ILogger<MfaService> logger)
     {
-        _db = db;
+        _db            = db;
         _recoveryCodes = recoveryCodes;
+        _logger        = logger;
         var raw = configuration["MfaSettings:EncryptionKey"] ?? throw new InvalidOperationException(
             "MfaSettings:EncryptionKey is required for MFA. Add it to appsettings or user-secrets.");
         // Derive a 32-byte key using PBKDF2 (tolerant of short config values)
@@ -47,14 +54,27 @@ public class MfaService : IMfaService
         var advogado = await GetAdvogadoAsync(advogadoId, ct);
 
         // Generate a fresh 20-byte (160-bit) random secret
-        var secretBytes = KeyGeneration.GenerateRandomKey(20);
-        var base32Secret = Base32Encoding.ToString(secretBytes);
-        var encrypted = Encrypt(base32Secret);
+        var secretBytes   = KeyGeneration.GenerateRandomKey(20);
+        var base32Secret  = Base32Encoding.ToString(secretBytes);
+        var encrypted     = Encrypt(base32Secret);
 
         // Store as pending (not active yet — will be promoted after first successful verify)
         advogado.MfaPendingSecret = encrypted;
         advogado.UpdatedAt = DateTimeOffset.UtcNow;
         await _db.SaveChangesAsync(ct);
+
+        // ── DIAG ──────────────────────────────────────────────────────────────
+        // [TEMP] Confirma que o segredo pendente foi persistido com sucesso.
+        // Remover antes do deploy em produção.
+        _logger.LogDebug(
+            "[MFA-DIAG] BeginSetup OK — advogadoId: {Id} | " +
+            "secretLen: {SLen} chars | encryptedLen: {ELen} chars | " +
+            "utcNow: {Utc} | step: {Step}s | algo: SHA1 | digits: 6",
+            advogadoId,
+            base32Secret.Length,
+            encrypted.Length,
+            DateTimeOffset.UtcNow.ToString("o"),
+            TotpStep);
 
         var qrUrl = $"otpauth://totp/{Uri.EscapeDataString(Issuer)}:{Uri.EscapeDataString(email)}" +
                     $"?secret={base32Secret}&issuer={Uri.EscapeDataString(Issuer)}&algorithm=SHA1&digits=6&period={TotpStep}";
@@ -66,11 +86,52 @@ public class MfaService : IMfaService
     {
         var advogado = await GetAdvogadoAsync(advogadoId, ct);
 
-        if (string.IsNullOrEmpty(advogado.MfaPendingSecret))
-            return false;
+        // ── DIAG ──────────────────────────────────────────────────────────────
+        // [TEMP] Ponto de diagnóstico 1: estado do segredo pendente no banco.
+        var hasPendingSecret = !string.IsNullOrEmpty(advogado.MfaPendingSecret);
+        _logger.LogDebug(
+            "[MFA-DIAG] CompleteSetup — advogadoId: {Id} | " +
+            "hasPendingSecret: {HasSecret} | encryptedLen: {ELen} | " +
+            "codeLen: {CLen} | utcNow: {Utc}",
+            advogadoId,
+            hasPendingSecret,
+            advogado.MfaPendingSecret?.Length ?? 0,
+            code.Trim().Length,
+            DateTimeOffset.UtcNow.ToString("o"));
 
-        var plainSecret = Decrypt(advogado.MfaPendingSecret);
-        if (!VerifyCode(plainSecret, code))
+        if (!hasPendingSecret)
+        {
+            _logger.LogWarning(
+                "[MFA-DIAG] CompleteSetup FALHOU — mfa_pending_secret é NULL/vazio " +
+                "para advogadoId: {Id}. Passo 1 não persistiu ou foi sobrescrito.", advogadoId);
+            return false;
+        }
+
+        string plainSecret;
+        try
+        {
+            plainSecret = Decrypt(advogado.MfaPendingSecret!);
+
+            // ── DIAG ──────────────────────────────────────────────────────────
+            // [TEMP] Ponto de diagnóstico 2: resultado da descriptografia.
+            // NÃO loga o segredo real — apenas comprimento e formato esperado (32 chars base32).
+            _logger.LogDebug(
+                "[MFA-DIAG] Decrypt OK — plainSecretLen: {Len} | isValidBase32Len: {Valid}",
+                plainSecret.Length,
+                plainSecret.Length is 32 or 16 or 26 or 56); // tamanhos válidos de Base32 (10/8/20/35 bytes)
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "[MFA-DIAG] CompleteSetup FALHOU — Decrypt lançou exceção para advogadoId: {Id}. " +
+                "Verifique se MfaSettings:EncryptionKey é a mesma usada no BeginSetup.",
+                advogadoId);
+            return false;
+        }
+
+        var codeOk = VerifyCode(plainSecret, code, _logger);
+        if (!codeOk)
             return false;
 
         // Promote pending → active
@@ -152,23 +213,58 @@ public class MfaService : IMfaService
         return adv;
     }
 
-    private static bool VerifyCode(string base32Secret, string code)
+    /// <summary>
+    /// Sobrecarga sem logger — usada por ValidateCodeAsync (login flow).
+    /// </summary>
+    private static bool VerifyCode(string base32Secret, string code) =>
+        VerifyCode(base32Secret, code, logger: null);
+
+    /// <summary>
+    /// Valida o código TOTP com janela de ±VerifyWindow ciclos.
+    /// Sobrecarga com logger opcional para diagnóstico no setup flow.
+    /// </summary>
+    private static bool VerifyCode(string base32Secret, string code, ILogger? logger)
     {
         try
         {
+            var trimmed = code.Trim();
+
+            // ── DIAG ────────────────────────────────────────────────────────
+            // Hora UTC real do servidor — compara com a do celular para clock skew.
+            var serverUtc = DateTimeOffset.UtcNow;
+
             var secretBytes = Base32Encoding.ToBytes(base32Secret);
             var totp        = new Totp(secretBytes, step: TotpStep);
 
+            // Calcula o código esperado neste instante para confirmar no log
+            // (NÃO exposto ao usuário — apenas vai para os logs de Debug internos).
+            var expectedCode = totp.ComputeTotp(serverUtc.UtcDateTime);
+
             // Janela explícita: ±VerifyWindow ciclos (±30s com TotpStep=30).
-            // Cobre dessincronias de relógio entre servidor e celular sem abrir
-            // uma janela excessivamente larga (segurança × usabilidade).
-            // Substitui VerificationWindow.RfcSpecifiedNetworkDelay para deixar
-            // claro que a constante VerifyWindow efetivamente controla a tolerância.
             var window = new VerificationWindow(previous: VerifyWindow, future: VerifyWindow);
-            return totp.VerifyTotp(code.Trim(), out _, window);
+            var ok     = totp.VerifyTotp(trimmed, out long matchedStep, window);
+
+            logger?.LogDebug(
+                "[MFA-DIAG] VerifyCode — serverUtcEpoch: {Epoch} | " +
+                "serverUtc: {Utc} | " +
+                "codeDigits: {Digits} | is6Digits: {Is6} | " +
+                "step: {Step}s | window: ±{Win} | algo: SHA1 | " +
+                "expectedMatchesReceived: {Match} | verifyResult: {Ok} | matchedStep: {Step2}",
+                serverUtc.ToUnixTimeSeconds(),
+                serverUtc.ToString("o"),
+                trimmed.Length,
+                trimmed.Length == 6,
+                TotpStep,
+                VerifyWindow,
+                expectedCode == trimmed,
+                ok,
+                ok ? matchedStep : -1L);
+
+            return ok;
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogError(ex, "[MFA-DIAG] VerifyCode lançou exceção — base32SecretLen: {Len}", base32Secret.Length);
             return false;
         }
     }

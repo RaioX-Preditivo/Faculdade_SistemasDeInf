@@ -1,9 +1,11 @@
 using Agile360.API.Models;
 using Agile360.Application.Auth.DTOs;
 using Agile360.Application.Interfaces;
+using Agile360.Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 
 namespace Agile360.API.Controllers;
 
@@ -42,17 +44,20 @@ public class MfaController : ControllerBase
     private readonly IAuthService _authService;
     private readonly ICurrentUserService _currentUser;
     private readonly IRecoveryCodeService _recoveryCodes;
+    private readonly Agile360DbContext _db;
 
     public MfaController(
         IMfaService mfa,
         IAuthService authService,
         ICurrentUserService currentUser,
-        IRecoveryCodeService recoveryCodes)
+        IRecoveryCodeService recoveryCodes,
+        Agile360DbContext db)
     {
         _mfa           = mfa;
         _authService   = authService;
         _currentUser   = currentUser;
         _recoveryCodes = recoveryCodes;
+        _db            = db;
     }
 
     // ── GET /api/auth/mfa/status ──────────────────────────────────────────
@@ -163,6 +168,68 @@ public class MfaController : ControllerBase
             return Unauthorized(ApiResponse<object>.Fail("Falha na autenticação.", statusCode: 401));
 
         return Ok(BuildSecureResponse(result.Data!));
+    }
+
+    // ── GET /api/auth/mfa/diagnostics ──────────────────────────────────────
+    // [TEMP] Endpoint de diagnóstico — APENAS em Development.
+    // @data-engineer: confirma estado do mfa_pending_secret no banco.
+    // @qa: expõe o relógio UTC do servidor para comparar com o do celular.
+    // REMOVER antes de ir para produção.
+
+    [HttpGet("diagnostics")]
+    [Authorize]
+    public async Task<IActionResult> Diagnostics(CancellationToken ct)
+    {
+        if (!HttpContext.RequestServices
+                .GetRequiredService<IWebHostEnvironment>()
+                .IsDevelopment())
+            return NotFound();
+
+        var advogadoId = _currentUser.AdvogadoId;
+        var utcNow     = DateTimeOffset.UtcNow;
+
+        var row = await _db.Advogados
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(a => a.Id == advogadoId)
+            .Select(a => new
+            {
+                a.Id,
+                a.Email,
+                a.MfaEnabled,
+                HasPendingSecret  = a.MfaPendingSecret != null,
+                PendingSecretLen  = a.MfaPendingSecret == null ? 0 : a.MfaPendingSecret.Length,
+                HasActiveSecret   = a.MfaSecret != null,
+                ActiveSecretLen   = a.MfaSecret == null ? 0 : a.MfaSecret.Length,
+                a.UpdatedAt,
+            })
+            .FirstOrDefaultAsync(ct);
+
+        if (row is null)
+            return NotFound(ApiResponse<object>.Fail($"Advogado {advogadoId} não encontrado.", statusCode: 404));
+
+        return Ok(new
+        {
+            serverUtc         = utcNow.ToString("o"),
+            serverEpoch       = utcNow.ToUnixTimeSeconds(),
+            currentTotpSlot   = utcNow.ToUnixTimeSeconds() / 30,
+            advogado = new
+            {
+                row.Id,
+                row.Email,
+                row.MfaEnabled,
+                row.HasPendingSecret,
+                row.PendingSecretLen,
+                row.HasActiveSecret,
+                row.ActiveSecretLen,
+                updatedAt = row.UpdatedAt.ToString("o"),
+            },
+            // Instrução para @qa: compare 'currentTotpSlot' com o slot do celular.
+            // Diferença de ±1 slot (30s) está dentro da VerificationWindow.
+            // Diferença de ≥2 slots → alinhe o relógio do servidor (NTP).
+            hint = "Compare currentTotpSlot com (epochDoSeuCelular / 30). " +
+                   "Diferença ≤ 1 é tolerada. Diferença ≥ 2 requer NTP no servidor."
+        });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
