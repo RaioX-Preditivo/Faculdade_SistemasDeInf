@@ -38,11 +38,9 @@ public record CreateStagingProcessoRequest(
     string?   FaseProcessual,
     string?   StatusProcesso,
     DateOnly? DataDistribuicao,
-    /// <summary>Nome do cliente — o bot pode não conhecer o Guid.</summary>
-    string?   ClienteNome,
+    string?   ClienteNome,   // Nome do cliente — o bot pode não conhecer o Guid
     string?   Observacoes,
-    /// <summary>Texto bruto da mensagem WhatsApp — contexto para revisão.</summary>
-    string?   OrigemMensagem
+    string?   OrigemMensagem // Texto bruto da mensagem WhatsApp — contexto para revisão
 );
 
 /// <summary>Resumo leve para badge / card do dashboard.</summary>

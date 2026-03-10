@@ -18,6 +18,7 @@ import { MfaChallenge } from './pages/MfaChallenge';
 import { SecuritySettings } from './pages/SecuritySettings';
 import { MinhaConta } from './pages/MinhaConta';
 import { SettingsPlaceholder } from './pages/SettingsPlaceholder';
+import { ApiKeys } from './pages/ApiKeys';
 import { SettingsLayout } from './layouts/SettingsLayout';
 
 function App() {
@@ -51,7 +52,7 @@ function App() {
             <Route path="minha-conta" element={<MinhaConta />} />
             <Route path="seguranca" element={<SecuritySettings />} />
             <Route path="notificacoes" element={<SettingsPlaceholder />} />
-            <Route path="integracoes" element={<SettingsPlaceholder />} />
+            <Route path="integracoes" element={<ApiKeys />} />
           </Route>
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -30,14 +30,11 @@ public record CreateStagingCompromissoRequest(
     DateOnly? Data,
     TimeOnly? Hora,
     string?   Local,
-    /// <summary>Nome do cliente — o bot pode não conhecer o Guid.</summary>
-    string?   ClienteNome,
-    /// <summary>Número do processo — referência textual.</summary>
-    string?   NumProcesso,
+    string?   ClienteNome,       // Nome do cliente — o bot pode não conhecer o Guid
+    string?   NumProcesso,       // Número do processo — referência textual
     string?   Observacoes,
     int?      LembreteMinutos,
-    /// <summary>Texto bruto da mensagem WhatsApp — contexto para revisão.</summary>
-    string?   OrigemMensagem
+    string?   OrigemMensagem     // Texto bruto da mensagem WhatsApp — contexto para revisão
 );
 
 /// <summary>Resumo leve para badge / card do dashboard.</summary>
