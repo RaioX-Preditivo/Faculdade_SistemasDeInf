@@ -182,70 +182,14 @@ namespace Agile360.Infrastructure.Data.Migrations
                 name: "audit_logs",
                 newName: "audit_log");
 
-            migrationBuilder.RenameColumn(
-                name: "role",
-                table: "advogado",
-                newName: "Role");
-
-            migrationBuilder.RenameColumn(
-                name: "plano",
-                table: "advogado",
-                newName: "Plano");
-
-            migrationBuilder.RenameColumn(
-                name: "estado",
-                table: "advogado",
-                newName: "Estado");
-
-            migrationBuilder.RenameColumn(
-                name: "cidade",
-                table: "advogado",
-                newName: "Cidade");
-
-            migrationBuilder.RenameColumn(
-                name: "stripe_customer_id",
-                table: "advogado",
-                newName: "StripeCustomerId");
-
-            migrationBuilder.RenameColumn(
-                name: "status_assinatura",
-                table: "advogado",
-                newName: "StatusAssinatura");
-
-            migrationBuilder.RenameColumn(
-                name: "password_hash",
-                table: "advogado",
-                newName: "PasswordHash");
-
-            migrationBuilder.RenameColumn(
-                name: "nome_escritorio",
-                table: "advogado",
-                newName: "NomeEscritorio");
-
-            migrationBuilder.RenameColumn(
-                name: "mfa_secret",
-                table: "advogado",
-                newName: "MfaSecret");
-
-            migrationBuilder.RenameColumn(
-                name: "mfa_pending_secret",
-                table: "advogado",
-                newName: "MfaPendingSecret");
-
-            migrationBuilder.RenameColumn(
-                name: "mfa_enabled",
-                table: "advogado",
-                newName: "MfaEnabled");
-
-            migrationBuilder.RenameColumn(
-                name: "foto_url",
-                table: "advogado",
-                newName: "FotoUrl");
-
-            migrationBuilder.RenameColumn(
-                name: "cpf_cnpj",
-                table: "advogado",
-                newName: "CpfCnpj");
+            // ── Nota: os RenameColumn para colunas da tabela "advogado" foram removidos. ──
+            // Motivo: a migration foi gerada sem UseSnakeCaseNamingConvention() ativo,
+            // gerando renames snake_case→PascalCase (ex: mfa_pending_secret → MfaPendingSecret).
+            // Com a convenção ativa, EF Core já mapeia as propriedades C# (PascalCase)
+            // para colunas snake_case automaticamente. Aplicar esses renames quebraria
+            // todos os SELECTs/UPDATEs em produção.
+            // As colunas já existem com os nomes corretos (snake_case) desde a migration
+            // 20260309120000_AddMfaColumnsToAdvogado.
 
             migrationBuilder.RenameColumn(
                 name: "ClienteId",
@@ -1046,70 +990,9 @@ namespace Agile360.Infrastructure.Data.Migrations
                 name: "audit_log",
                 newName: "audit_logs");
 
-            migrationBuilder.RenameColumn(
-                name: "Role",
-                table: "advogado",
-                newName: "role");
-
-            migrationBuilder.RenameColumn(
-                name: "Plano",
-                table: "advogado",
-                newName: "plano");
-
-            migrationBuilder.RenameColumn(
-                name: "Estado",
-                table: "advogado",
-                newName: "estado");
-
-            migrationBuilder.RenameColumn(
-                name: "Cidade",
-                table: "advogado",
-                newName: "cidade");
-
-            migrationBuilder.RenameColumn(
-                name: "StripeCustomerId",
-                table: "advogado",
-                newName: "stripe_customer_id");
-
-            migrationBuilder.RenameColumn(
-                name: "StatusAssinatura",
-                table: "advogado",
-                newName: "status_assinatura");
-
-            migrationBuilder.RenameColumn(
-                name: "PasswordHash",
-                table: "advogado",
-                newName: "password_hash");
-
-            migrationBuilder.RenameColumn(
-                name: "NomeEscritorio",
-                table: "advogado",
-                newName: "nome_escritorio");
-
-            migrationBuilder.RenameColumn(
-                name: "MfaSecret",
-                table: "advogado",
-                newName: "mfa_secret");
-
-            migrationBuilder.RenameColumn(
-                name: "MfaPendingSecret",
-                table: "advogado",
-                newName: "mfa_pending_secret");
-
-            migrationBuilder.RenameColumn(
-                name: "MfaEnabled",
-                table: "advogado",
-                newName: "mfa_enabled");
-
-            migrationBuilder.RenameColumn(
-                name: "FotoUrl",
-                table: "advogado",
-                newName: "foto_url");
-
-            migrationBuilder.RenameColumn(
-                name: "CpfCnpj",
-                table: "advogado",
-                newName: "cpf_cnpj");
+            // ── Nota: reverso dos RenameColumn omitido (simétrico ao Up()). ──
+            // Os renames foram removidos do Up() porque não são necessários;
+            // portanto o Down() não precisa revertê-los.
 
             migrationBuilder.RenameColumn(
                 name: "id_cliente",
