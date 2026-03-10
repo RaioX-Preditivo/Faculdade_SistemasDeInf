@@ -5,9 +5,17 @@
 -- CONTEXTO:
 --   O banco foi inicializado manualmente (Supabase Dashboard / SQL Editor),
 --   nunca via `dotnet ef database update`. Por isso:
---     ✗  __EFMigrationsHistory não existe
---     ✗  advogado_recovery_codes não existe
+--     ✗  __EFMigrationsHistory não existia
+--     ✗  advogado_recovery_codes não existia
 --     ✓  Todas as outras tabelas e colunas existem e estão corretas
+--
+-- CONVENÇÃO CRÍTICA DO PROJETO:
+--   O banco Supabase usa estritamente LOWERCASE para todos os
+--   identificadores (colunas, tabelas, constraints, índices).
+--   Exemplos: "id", "advogado_id", "code_hash", "is_used"
+--   NUNCA use PascalCase ou camelCase entre aspas em scripts SQL.
+--   O EF Core com UseSnakeCaseNamingConvention() garante que
+--   a camada de dados respeite automaticamente esse padrão.
 --
 -- O QUE ESTE SCRIPT FAZ:
 --   1. Cria __EFMigrationsHistory (tabela de controle do EF Core)
@@ -36,7 +44,8 @@ BEGIN;
 -- ────────────────────────────────────────────────────────────
 -- Sem ela, `dotnet ef database update` lança:
 --   "relation '__EFMigrationsHistory' does not exist"
--- O nome exato com aspas é obrigatório — EF Core usa case-sensitive.
+-- O nome exato com aspas é obrigatório — EF Core usa case-sensitive
+-- apenas para o NOME DA TABELA. As colunas são lowercase.
 
 CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" (
     "MigrationId"    character varying(150) NOT NULL,
@@ -61,26 +70,25 @@ ON CONFLICT ("MigrationId") DO NOTHING;
 -- ────────────────────────────────────────────────────────────
 -- PASSO 3: Criar tabela de códigos de recuperação MFA
 -- ────────────────────────────────────────────────────────────
--- Equivalente ao que a migration 20260309194614_AddRecoveryCodesTable faria.
--- Segue exatamente o schema definido em RecoveryCodeConfiguration.cs.
+-- CONVENÇÃO: todas as colunas em lowercase (snake_case),
+-- alinhado com UseSnakeCaseNamingConvention() do EF Core.
 
 CREATE TABLE IF NOT EXISTS "advogado_recovery_codes" (
-    "Id"          uuid                     NOT NULL,
+    "id"          uuid                     NOT NULL,   -- lowercase: EF mapeia Id→id
     "advogado_id" uuid                     NOT NULL,
     "code_hash"   character varying(100)   NOT NULL,
     "is_used"     boolean                  NOT NULL DEFAULT false,
     "used_at"     timestamp with time zone          DEFAULT NULL,
     "created_at"  timestamp with time zone NOT NULL,
-    CONSTRAINT "PK_advogado_recovery_codes"
-        PRIMARY KEY ("Id"),
-    CONSTRAINT "FK_advogado_recovery_codes_advogado_advogado_id"
+    CONSTRAINT "pk_advogado_recovery_codes"
+        PRIMARY KEY ("id"),
+    CONSTRAINT "fk_advogado_recovery_codes_advogado_advogado_id"
         FOREIGN KEY ("advogado_id")
-        REFERENCES "advogado" ("Id")
+        REFERENCES "advogado" ("id")
         ON DELETE CASCADE
 );
 
--- Índice composto para busca rápida de códigos ativos
--- (operação crítica no login com código de recuperação)
+-- Índice composto: busca rápida de códigos ativos de um advogado
 CREATE INDEX IF NOT EXISTS "ix_recovery_codes_advogado_active"
     ON "advogado_recovery_codes" ("advogado_id", "is_used");
 
@@ -102,37 +110,26 @@ COMMIT;
 SELECT "MigrationId", "ProductVersion"
 FROM "__EFMigrationsHistory"
 ORDER BY "MigrationId";
-
 -- Resultado esperado (4 linhas):
 --  20260221190324_InitialSchema
 --  20260221200001_AddAuditShadowPropertiesAndAuditLog
 --  20260309120000_AddMfaColumnsToAdvogado
 --  20260309194614_AddRecoveryCodesTable
 
--- 2. Confirma que a tabela de recovery codes foi criada:
-SELECT
-    column_name,
-    data_type,
-    is_nullable,
-    column_default
+-- 2. Confirma que a tabela de recovery codes foi criada (6 colunas lowercase):
+SELECT column_name, data_type, is_nullable, column_default
 FROM information_schema.columns
 WHERE table_schema = 'public'
   AND table_name   = 'advogado_recovery_codes'
 ORDER BY ordinal_position;
+-- Resultado esperado:
+--  id          | uuid                     | NO  |
+--  advogado_id | uuid                     | NO  |
+--  code_hash   | character varying        | NO  |
+--  is_used     | boolean                  | NO  | false
+--  used_at     | timestamp with time zone | YES |
+--  created_at  | timestamp with time zone | NO  |
 
--- Resultado esperado (6 colunas):
---  Id          | uuid                        | NO  |
---  advogado_id | uuid                        | NO  |
---  code_hash   | character varying           | NO  |
---  is_used     | boolean                     | NO  | false
---  used_at     | timestamp with time zone    | YES |
---  created_at  | timestamp with time zone    | NO  |
-
--- 3. Confirma o índice:
-SELECT indexname, indexdef
-FROM pg_indexes
+-- 3. Confirma índice e FK:
+SELECT indexname, indexdef FROM pg_indexes
 WHERE tablename = 'advogado_recovery_codes';
-
--- Resultado esperado (2 entradas):
---  PK_advogado_recovery_codes           | ... PRIMARY KEY ...
---  ix_recovery_codes_advogado_active    | ... (advogado_id, is_used)

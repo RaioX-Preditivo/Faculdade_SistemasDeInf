@@ -1,47 +1,46 @@
 ﻿-- ============================================================
 -- Script: apply_recovery_codes_table.sql
--- Gerado em: 2026-03-10 14:51:16 UTC
 -- Origem: Migration 20260309194614_AddRecoveryCodesTable
 --
--- INSTRUÃ‡Ã•ES PARA O @data-engineer:
---   1. Abra o Supabase Dashboard > SQL Editor
---   2. Cole este script e execute
---   3. Verifique que a tabela foi criada em Database > Tables
+-- CONVENÇÃO CRÍTICA DO PROJETO:
+--   O banco Supabase usa estritamente LOWERCASE para todos os
+--   identificadores (colunas, tabelas, constraints, índices).
+--   Nunca use PascalCase ou camelCase entre aspas em scripts SQL.
 --
--- SEGURO PARA RE-EXECUTAR: usa IF NOT EXISTS em todos os DDLs
+-- INSTRUÇÕES:
+--   Supabase Dashboard → SQL Editor → cole e execute
+--   SEGURO PARA RE-EXECUTAR: usa IF NOT EXISTS
 -- ============================================================
 
--- Cria a tabela de cÃ³digos de recuperaÃ§Ã£o MFA
+-- Cria a tabela de códigos de recuperação MFA
+-- Todas as colunas em lowercase (snake_case), alinhado com
+-- UseSnakeCaseNamingConvention() do EF Core em runtime.
 CREATE TABLE IF NOT EXISTS "advogado_recovery_codes" (
-    "Id"           uuid                        NOT NULL,
-    "advogado_id"  uuid                        NOT NULL,
-    "code_hash"    character varying(100)      NOT NULL,
-    "is_used"      boolean                     NOT NULL DEFAULT false,
-    "used_at"      timestamp with time zone    NULL,
-    "created_at"   timestamp with time zone    NOT NULL,
-    CONSTRAINT "PK_advogado_recovery_codes" PRIMARY KEY ("Id"),
-    CONSTRAINT "FK_advogado_recovery_codes_advogado_advogado_id"
+    "id"          uuid                     NOT NULL,
+    "advogado_id" uuid                     NOT NULL,
+    "code_hash"   character varying(100)   NOT NULL,
+    "is_used"     boolean                  NOT NULL DEFAULT false,
+    "used_at"     timestamp with time zone          DEFAULT NULL,
+    "created_at"  timestamp with time zone NOT NULL,
+    CONSTRAINT "pk_advogado_recovery_codes"
+        PRIMARY KEY ("id"),
+    CONSTRAINT "fk_advogado_recovery_codes_advogado_advogado_id"
         FOREIGN KEY ("advogado_id")
-        REFERENCES "advogado" ("Id")
+        REFERENCES "advogado" ("id")
         ON DELETE CASCADE
 );
 
--- Ãndice composto para busca rÃ¡pida: cÃ³digos ativos de um advogado
+-- Índice composto para busca rápida de códigos ativos
 CREATE INDEX IF NOT EXISTS "ix_recovery_codes_advogado_active"
     ON "advogado_recovery_codes" ("advogado_id", "is_used");
 
--- Registra a migration no histÃ³rico do EF Core
--- (evita que dotnet ef database update tente re-aplicÃ¡-la no futuro)
+-- Registra a migration no histórico do EF Core
 INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
 VALUES ('20260309194614_AddRecoveryCodesTable', '9.0.1')
 ON CONFLICT ("MigrationId") DO NOTHING;
 
--- VerificaÃ§Ã£o: exibe estrutura da tabela criada
-SELECT
-    column_name,
-    data_type,
-    is_nullable,
-    column_default
+-- Verificação
+SELECT column_name, data_type, is_nullable
 FROM information_schema.columns
 WHERE table_schema = 'public'
   AND table_name   = 'advogado_recovery_codes'
