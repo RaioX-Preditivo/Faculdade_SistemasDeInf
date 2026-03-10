@@ -24,7 +24,7 @@ public class MfaService : IMfaService
 {
     private const string Issuer = "Agile360";
     private const int TotpStep = 30;      // seconds per code
-    private const int VerifyWindow = 1;   // ±1 step tolerance (~30s each side)
+    private const int VerifyWindow = 1;   // ±1 step tolerance (~30s cada lado, per RFC 6238 §5.2)
 
     private readonly Agile360DbContext _db;
     private readonly byte[] _encKey;
@@ -157,8 +157,15 @@ public class MfaService : IMfaService
         try
         {
             var secretBytes = Base32Encoding.ToBytes(base32Secret);
-            var totp = new Totp(secretBytes, step: TotpStep);
-            return totp.VerifyTotp(code.Trim(), out _, VerificationWindow.RfcSpecifiedNetworkDelay);
+            var totp        = new Totp(secretBytes, step: TotpStep);
+
+            // Janela explícita: ±VerifyWindow ciclos (±30s com TotpStep=30).
+            // Cobre dessincronias de relógio entre servidor e celular sem abrir
+            // uma janela excessivamente larga (segurança × usabilidade).
+            // Substitui VerificationWindow.RfcSpecifiedNetworkDelay para deixar
+            // claro que a constante VerifyWindow efetivamente controla a tolerância.
+            var window = new VerificationWindow(previous: VerifyWindow, future: VerifyWindow);
+            return totp.VerifyTotp(code.Trim(), out _, window);
         }
         catch
         {

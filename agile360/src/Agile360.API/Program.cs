@@ -41,6 +41,12 @@ var validateKey    = !string.IsNullOrEmpty(jwtSecret)  && !jwtSecret.Contains('<
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        // ─── .NET 8: JsonWebTokenHandler não remapeia "sub" → NameIdentifier ────
+        // MapInboundClaims = false garante comportamento explícito e consistente:
+        // todos os claims JWT chegam com seus nomes originais (sub, email, etc.).
+        // CurrentUserService.AdvogadoId tenta "advogado_id", NameIdentifier E "sub".
+        options.MapInboundClaims = false;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer           = validateIssuer,
@@ -53,18 +59,21 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                                            : null,
             RequireSignedTokens      = validateKey,
             ValidateLifetime         = true,
-            ClockSkew                = TimeSpan.Zero,
+
+            // ─── Clock Skew — tolerância de 30s para diferenças de relógio ────
+            // TimeSpan.Zero é severo demais: um servidor 1s atrasado já invalida
+            // tokens recém-emitidos. 30s é o padrão de mercado para JWT.
+            ClockSkew = TimeSpan.FromSeconds(30),
 
             // ─── Bypass de assinatura quando Secret não está configurado ─────
-            // .NET 8+ usa JsonWebTokenHandler; o SignatureValidator deve retornar
-            // JsonWebToken (não JwtSecurityToken) para ser aceito pelo handler.
+            // Deve retornar JsonWebToken (não JwtSecurityToken) para o novo handler.
             // PRODUÇÃO: configure JwtSettings:Secret (Supabase → Settings → API → JWT Secret).
             SignatureValidator = validateKey
                 ? null
                 : (token, _) => new JsonWebTokenHandler().ReadJsonWebToken(token),
         };
 
-        // ─── Logging de falhas de autenticação (diagnóstico) ─────────────────
+        // ─── Logging de autenticação (diagnóstico) ────────────────────────────
         options.Events = new JwtBearerEvents
         {
             OnAuthenticationFailed = ctx =>
@@ -74,22 +83,38 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             },
             OnTokenValidated = ctx =>
             {
-                var sub = ctx.Principal?.FindFirst("sub")?.Value ?? "(sem sub)";
-                Log.Debug("[JWT] Token válido — sub: {Sub}", sub);
+                // Com MapInboundClaims = false, "sub" permanece como "sub".
+                // Fallback para NameIdentifier preserva compatibilidade retroativa.
+                var advogadoId = ctx.Principal?.FindFirst("sub")?.Value
+                              ?? ctx.Principal?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                              ?? "(sem sub)";
+                Log.Debug("[JWT] Token válido — advogadoId: {AdvogadoId}", advogadoId);
                 return Task.CompletedTask;
             }
         };
     })
     .AddScheme<ApiKeyAuthenticationOptions, ApiKeyAuthenticationHandler>(
         ApiKeyAuthenticationDefaults.AuthenticationScheme, _ => { });
+
 builder.Services.AddAuthorization(options =>
 {
-    // Qualquer endpoint com [Authorize] aceita JWT *ou* API Key
+    // Política padrão: apenas JWT.
+    // Separamos ApiKey para evitar que o ApiKeyHandler tente autenticar TODOS os
+    // requests JWT e emita "was not authenticated" em cada um (poluição de logs).
     options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
-            JwtBearerDefaults.AuthenticationScheme,
-            ApiKeyAuthenticationDefaults.AuthenticationScheme)
+            JwtBearerDefaults.AuthenticationScheme)
         .RequireAuthenticatedUser()
         .Build();
+
+    // Política explícita para endpoints que aceitam JWT *ou* API Key
+    // (ex.: webhooks, integrações server-to-server).
+    // Uso: [Authorize(Policy = "JwtOrApiKey")]
+    options.AddPolicy("JwtOrApiKey",
+        new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
+                JwtBearerDefaults.AuthenticationScheme,
+                ApiKeyAuthenticationDefaults.AuthenticationScheme)
+            .RequireAuthenticatedUser()
+            .Build());
 });
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
