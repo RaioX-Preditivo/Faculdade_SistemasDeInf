@@ -1,0 +1,27 @@
+Primeiro criar entidades em src/main/java > New > Class.
+Package: model.
+
+exemplo:
+Name: Produto.
+
+O que ela faz: Define o que um produto tem (ID, Nome e Preço).
+
+-----------------------------------------
+
+Depois criar o controlador (servlet) em rc/main/java > New > Servlet.
+Package: model.
+
+exemplo:
+Class name: ProdutoServlet.
+
+O que ela faz: Ela decide o que acontece quando você clica em botões. O doGet mostra a lista e o doPost salva o novo produto.
+
+-----------------------------------------
+
+Depois criar as telas (views) em src > main > webapp  > New > JSP File.
+1.criado tela cadastro.jsp para os cadastros:
+Contém o <form>. Lembre-se que o method do formulário deve ser post para o Java cair no seu método doPost da Servlet.
+
+2.criado tela lista.jsp 
+Contém a <table>. Ela usa código Java (<% ... %>) para percorrer a lista que a Servlet enviou.
+
