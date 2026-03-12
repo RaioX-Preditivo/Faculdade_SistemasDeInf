@@ -129,11 +129,20 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
+// Política padrão: origens configuradas (browser/frontend).
+// Política "ApiIntegration": sem restrição de Origin para chamadas server-to-server
+// (Postman, n8n, cloudflared) que não enviam o header Origin.
 var allowedOrigins = builder.Configuration.GetSection("CORS:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
         policy.WithOrigins(allowedOrigins).AllowAnyMethod().AllowAnyHeader());
+
+    // Endpoints de staging e API Keys chamados por n8n/Postman (sem Origin header).
+    options.AddPolicy("ApiIntegration", policy =>
+        policy.SetIsOriginAllowed(_ => true)   // qualquer origem (inclui ausência de Origin)
+              .AllowAnyMethod()
+              .AllowAnyHeader());
 });
 
 // ─── Controllers + JSON ───────────────────────────────────────────────────────
@@ -181,11 +190,27 @@ app.Use(async (context, next) =>
 });
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
-app.UseMiddleware<WebhookAuthMiddleware>();
 
 // CORS deve vir antes de UseAuthentication para que os headers de CORS
 // estejam presentes mesmo em respostas de erro (401, 403, 429).
 app.UseCors();
+
+app.UseMiddleware<WebhookAuthMiddleware>();
+
+// ─── [DIAG] Log de headers brutos — remover após estabilizar autenticação ──────
+// Imprime todos os headers recebidos para comparar Swagger vs Postman vs n8n.
+app.Use(async (ctx, next) =>
+{
+    var log = ctx.RequestServices.GetRequiredService<ILogger<Program>>();
+    if (ctx.Request.Path.StartsWithSegments("/api/clientes") ||
+        ctx.Request.Path.StartsWithSegments("/api/staging"))
+    {
+        var headers = string.Join(" | ", ctx.Request.Headers
+            .Select(h => $"{h.Key}={string.Join(",", h.Value.Select(v => v?.Length > 20 ? v[..20] + "…" : v ?? ""))}"));
+        log.LogDebug("[DIAG-HEADERS] {Method} {Path} → {Headers}", ctx.Request.Method, ctx.Request.Path, headers);
+    }
+    await next();
+});
 
 app.UseAuthentication();
 app.UseMiddleware<TenantMiddleware>();
@@ -193,10 +218,18 @@ app.UseAuthorization();
 app.UseRateLimiter();
 app.UseSerilogRequestLogging();
 
-if (app.Environment.IsDevelopment())
+// Swagger disponível em Development e em qualquer ambiente que não seja Production.
+// Isso permite acesso via túnel Cloudflare durante testes de staging.
+if (!app.Environment.IsProduction())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(o => o.SwaggerEndpoint("/swagger/v1/swagger.json", "Agile360 API v1"));
+    app.UseSwaggerUI(o =>
+    {
+        o.SwaggerEndpoint("/swagger/v1/swagger.json", "Agile360 API v1");
+        o.DisplayRequestDuration();
+        // Persiste a autorização entre recarregamentos da página do Swagger
+        o.ConfigObject.PersistAuthorization = true;
+    });
 }
 
 app.MapControllers();

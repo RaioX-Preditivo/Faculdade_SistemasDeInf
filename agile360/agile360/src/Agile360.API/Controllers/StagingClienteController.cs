@@ -7,6 +7,7 @@ using Agile360.Domain.Enums;
 using Agile360.Domain.Interfaces;
 using Agile360.Shared;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Agile360.API.Controllers;
@@ -49,6 +50,7 @@ public class StagingClienteController : ControllerBase
 
     [HttpPost]
     [Authorize(Policy = "JwtOrApiKey")]
+    [EnableCors("ApiIntegration")]   // n8n/Postman não enviam Origin — política permissiva para server-to-server
     [ProducesResponseType(typeof(ApiResponse<StagingClienteResponse>), 201)]
     [ProducesResponseType(typeof(ApiResponse<object>), 400)]
     public async Task<IActionResult> Create(

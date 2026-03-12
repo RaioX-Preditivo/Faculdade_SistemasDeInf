@@ -27,33 +27,49 @@ public class ApiKeyAuthenticationOptions : AuthenticationSchemeOptions { }
 ///   4. Build ClaimsPrincipal with AdvogadoId as sub — same claims shape as JWT
 ///   5. Fire-and-forget: update last_used_at
 /// </summary>
-public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthenticationOptions>
-{
-    public ApiKeyAuthenticationHandler(
-        IOptionsMonitor<ApiKeyAuthenticationOptions> options,
-        ILoggerFactory logger,
-        UrlEncoder encoder)
-        : base(options, logger, encoder) { }
-
-    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
+    public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthenticationOptions>
     {
-        if (!Request.Headers.TryGetValue(ApiKeyAuthenticationDefaults.HeaderName, out var rawKeyValues))
-            return AuthenticateResult.NoResult(); // absent header → try JWT scheme next
+        public ApiKeyAuthenticationHandler(
+            IOptionsMonitor<ApiKeyAuthenticationOptions> options,
+            ILoggerFactory logger,
+            UrlEncoder encoder)
+            : base(options, logger, encoder) { }
 
-        var rawKey = rawKeyValues.FirstOrDefault();
-        if (string.IsNullOrWhiteSpace(rawKey))
-            return AuthenticateResult.Fail("X-Api-Key header is empty.");
-
-        var repo = Context.RequestServices.GetRequiredService<IApiKeyRepository>();
-        var hash = TokenHasher.Hash(rawKey);
-        var apiKey = await repo.FindActiveAsync(hash, Context.RequestAborted);
-
-        if (apiKey == null)
+        protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
         {
-            Logger.LogWarning("Invalid or expired API key (prefix: {Prefix})",
-                rawKey.Length >= 8 ? rawKey[..8] : "??");
-            return AuthenticateResult.Fail("API key inválida ou expirada.");
-        }
+            // [DIAG] Log leve para entender o que chega do n8n/Cloudflare (sem valores sensíveis)
+            var headerKeys = string.Join(", ", Request.Headers.Keys);
+            Logger.LogDebug("[ApiKey] {Method} {Path} | Headers: {Headers}",
+                Request.Method, Request.Path, headerKeys);
+
+            if (!Request.Headers.TryGetValue(ApiKeyAuthenticationDefaults.HeaderName, out var rawKeyValues))
+            {
+                Logger.LogDebug("[ApiKey] Header {Header} ausente. Deixando JWT assumir.",
+                    ApiKeyAuthenticationDefaults.HeaderName);
+                return AuthenticateResult.NoResult(); // absent header → try JWT scheme next
+            }
+
+            var rawKey = rawKeyValues.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(rawKey))
+            {
+                Logger.LogWarning("[ApiKey] Header {Header} vazio ou whitespace.",
+                    ApiKeyAuthenticationDefaults.HeaderName);
+                return AuthenticateResult.Fail("X-Api-Key header is empty.");
+            }
+
+            var safePrefix = rawKey.Length >= 8 ? rawKey[..8] : "??";
+            var hash = TokenHasher.Hash(rawKey);
+            Logger.LogDebug("[ApiKey] Tentando autenticar chave com prefixo {Prefix} | hash={Hash}",
+                safePrefix, hash);
+
+            var repo = Context.RequestServices.GetRequiredService<IApiKeyRepository>();
+            var apiKey = await repo.FindActiveAsync(hash, Context.RequestAborted);
+
+            if (apiKey == null)
+            {
+                Logger.LogWarning("[ApiKey] Chave inválida ou expirada (prefixo: {Prefix})", safePrefix);
+                return AuthenticateResult.Fail("API key inválida ou expirada.");
+            }
 
         // Fire-and-forget com escopo próprio: evita usar o DbContext do request após ele ser descartado.
         var scopeFactory = Context.RequestServices.GetRequiredService<IServiceScopeFactory>();

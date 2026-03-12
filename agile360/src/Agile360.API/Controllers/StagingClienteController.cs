@@ -55,20 +55,26 @@ public class StagingClienteController : ControllerBase
         [FromBody] CreateStagingClienteRequest request,
         CancellationToken ct)
     {
-        // Basic guard: must have at least a name or razão social
-        if (string.IsNullOrWhiteSpace(request.Nome) &&
+        // Basic guard: must have at least a nome completo or razão social
+        if (string.IsNullOrWhiteSpace(request.NomeCompleto) &&
             string.IsNullOrWhiteSpace(request.RazaoSocial))
         {
             return BadRequest(ApiResponse<object>.Fail(
                 "Informe pelo menos o Nome (PF) ou Razão Social (PJ).", statusCode: 400));
         }
 
+        // TipoPessoa é derivado do texto de tipo_cliente enviado pelo n8n
+        var tipoCliente = (request.TipoCliente ?? "Pessoa Física").Trim();
+        var tipoPessoa = tipoCliente.Equals("Pessoa Jurídica", StringComparison.OrdinalIgnoreCase)
+            ? TipoPessoa.PessoaJuridica
+            : TipoPessoa.PessoaFisica;
+
         var item = new StagingCliente
         {
             Id              = Guid.NewGuid(),
             AdvogadoId      = _currentUser.AdvogadoId,
-            TipoPessoa      = request.TipoPessoa,
-            Nome            = request.Nome,
+            TipoPessoa      = tipoPessoa,
+            NomeCompleto    = request.NomeCompleto,
             CPF             = DocumentSanitizer.Sanitize(request.CPF),
             RG              = DocumentSanitizer.Sanitize(request.RG),
             OrgaoExpedidor  = request.OrgaoExpedidor,
@@ -79,11 +85,20 @@ public class StagingClienteController : ControllerBase
             Telefone        = DocumentSanitizer.Sanitize(request.Telefone),
             WhatsAppNumero  = DocumentSanitizer.Sanitize(request.WhatsAppNumero),
             DataReferencia  = request.DataReferencia,
+            CEP             = DocumentSanitizer.Sanitize(request.CEP),
+            Estado          = request.Estado,
+            Cidade          = request.Cidade,
             AreaAtuacao     = request.AreaAtuacao,
             Endereco        = request.Endereco,
+            Numero          = request.Numero,
+            Bairro          = request.Bairro,
+            Complemento     = request.Complemento,
+            EstadoCivil     = request.EstadoCivil,
+            NumeroConta     = request.NumeroConta,
+            Pix             = request.Pix,
             Observacoes     = request.Observacoes,
             Origem          = OrigemCliente.WhatsApp,
-            OrigemMensagem  = request.OrigemMensagem,
+            OrigemMensagem  = request.Mensagem,
             Status          = StagingStatus.Pendente,
             ExpiresAt       = DateTimeOffset.UtcNow.AddHours(24),
             CreatedAt       = DateTimeOffset.UtcNow,
@@ -147,7 +162,7 @@ public class StagingClienteController : ControllerBase
             AdvogadoId        = _currentUser.AdvogadoId,
             TipoCliente       = staging.TipoPessoa == Agile360.Domain.Enums.TipoPessoa.PessoaJuridica
                                     ? "Pessoa Jurídica" : "Pessoa Física",
-            NomeCompleto      = staging.Nome,
+            NomeCompleto      = staging.NomeCompleto,
             CPF               = staging.CPF,
             RG                = staging.RG,
             OrgaoExpedidor    = staging.OrgaoExpedidor,
@@ -192,7 +207,7 @@ public class StagingClienteController : ControllerBase
     private static StagingClienteResponse Map(StagingCliente s) => new(
         s.Id,
         s.TipoPessoa,
-        s.Nome, s.CPF, s.RG, s.OrgaoExpedidor,
+        s.NomeCompleto, s.CPF, s.RG, s.OrgaoExpedidor,
         s.RazaoSocial, s.CNPJ, s.InscricaoEstadual,
         s.Email, s.Telefone, s.WhatsAppNumero,
         s.DataReferencia, s.AreaAtuacao,

@@ -34,23 +34,44 @@ public record StagingClienteResponse(
 /// All fields are optional — the bot may collect partial data.
 /// </summary>
 public record CreateStagingClienteRequest(
-    TipoPessoa TipoPessoa,
-    string? Nome,
+    // Documento / identificação
     string? CPF,
+    string? CNPJ,
     string? RG,
     string? OrgaoExpedidor,
-    string? RazaoSocial,
-    string? CNPJ,
     string? InscricaoEstadual,
+
+    // Nome / tipo de cliente
+    string? NomeCompleto,
+    string? RazaoSocial,
+    string? TipoCliente,
+
+    // Contato
     string? Email,
     string? Telefone,
     string? WhatsAppNumero,
-    DateOnly? DataReferencia,
-    string? AreaAtuacao,
+
+    // Endereço completo
+    string? CEP,
+    string? Estado,
+    string? Cidade,
     string? Endereco,
+    string? Numero,
+    string? Bairro,
+    string? Complemento,
+
+    // Dados complementares
+    DateOnly? DataReferencia,
+    string? EstadoCivil,
+    string? AreaAtuacao,
+    string? NumeroConta,
+    string? Pix,
+
+    // Observações livres
     string? Observacoes,
-    // Raw WhatsApp message text — context for the advogado when reviewing.
-    string? OrigemMensagem
+
+    // Texto bruto e contexto da mensagem
+    string? Mensagem
 );
 
 /// <summary>Lightweight summary used for the dashboard badge / card.</summary>

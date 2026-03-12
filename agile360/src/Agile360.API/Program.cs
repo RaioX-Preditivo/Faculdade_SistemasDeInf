@@ -157,6 +157,28 @@ builder.Services.AddSwaggerGen(options =>
         Version     = "v1",
         Description = "Agile360 – CRM Jurídico API"
     });
+
+    // ─── Suporte a API Key (X-Api-Key) no Swagger UI ─────────────────────────────
+    var apiKeyScheme = new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+    {
+        Name   = ApiKeyAuthenticationDefaults.HeaderName,
+        In     = Microsoft.OpenApi.Models.ParameterLocation.Header,
+        Type   = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey,
+        Scheme = ApiKeyAuthenticationDefaults.AuthenticationScheme,
+        Description = "Chave de integração Agile360. Envie o valor bruto gerado em Configurações → Integrações.\n\nHeader: X-Api-Key: <sua-chave>",
+        Reference = new Microsoft.OpenApi.Models.OpenApiReference
+        {
+            Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+            Id   = ApiKeyAuthenticationDefaults.AuthenticationScheme
+        }
+    };
+
+    options.AddSecurityDefinition(ApiKeyAuthenticationDefaults.AuthenticationScheme, apiKeyScheme);
+
+    options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+    {
+        [apiKeyScheme] = Array.Empty<string>()
+    });
 });
 
 // ─── Webhook / Tenant ─────────────────────────────────────────────────────────
